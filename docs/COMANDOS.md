@@ -1,5 +1,7 @@
 # Guía de comandos
 
+> [English](COMMANDS.md) · **Español**
+
 Referencia rápida para conectarse, diagnosticar y resolver los errores más comunes. Todos los comandos son de solo lectura.
 
 ## 1. Conexión por SSO

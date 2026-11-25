@@ -1,171 +1,173 @@
-# AWS Pulse: observabilidad y seguridad multicuenta de AWS en un clic
+# AWS Pulse: one-click, multi-account AWS observability and security posture
 
-> **Read-only, multi-account AWS observability and security posture, from your terminal or a local dashboard.**
+> **English** · [Español](README.es.md)
 
-![Solo lectura](https://img.shields.io/badge/acceso-solo%20lectura-2E7D32)
+![Read-only](https://img.shields.io/badge/access-read--only-2E7D32)
 ![AWS CLI v2](https://img.shields.io/badge/AWS%20CLI-v2-FF9900?logo=amazonaws&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-dashboard-FF4B4B?logo=streamlit&logoColor=white)
 ![Bash](https://img.shields.io/badge/Bash-scripts-4EAA25?logo=gnubash&logoColor=white)
-![Licencia MIT](https://img.shields.io/badge/licencia-MIT-1F4E79)
+![License MIT](https://img.shields.io/badge/license-MIT-1F4E79)
 
-Saber en minutos **qué está roto, qué es inseguro y qué cambió** en varias cuentas AWS a la vez, sin entrar cuenta por cuenta a la consola y **sin poder romper nada**: todo funciona con un rol de solo lectura.
+Find out in minutes **what is broken, what is insecure and what changed** across several AWS accounts at once, without clicking through the console account by account and **without being able to break anything**: everything runs with a read-only role.
 
-![Resumen del ecosistema](docs/img/01-resumen.png)
+![Ecosystem summary](docs/img/01-resumen.png)
+
+> The dashboard UI and the script reports are in Spanish; the code, configuration and documentation are available in both languages.
 
 ---
 
-## Qué resuelve
+## What it solves
 
-| Pregunta | Respuesta en AWS Pulse |
+| Question | What AWS Pulse shows |
 |---|---|
-| ¿Está todo bien hoy? | Semáforo por área, alarmas, estado de servidores y de cada túnel VPN, con caídas de las últimas 24 h |
-| ¿Por qué un servicio no responde? | Pruebas de puertos, VPC Flow Logs y consola del sistema operativo con la hora traducida |
-| ¿Mi WAF protege de verdad? | Detecta reglas en modo **Count** (monitorean pero no bloquean), WAF sin logging y recursos sin protección |
-| ¿Cómo está la base de datos? | CPU, % de memoria, conexiones y **retardo de réplica** del lector, desde CloudWatch |
-| ¿Qué tan segura es la cuenta? | Hallazgos de Security Hub explicados en español: configuración insegura, parches de Windows y CVE por paquete |
-| ¿Quién cambió qué? | Línea de tiempo de CloudTrail, con el ruido automático filtrado y los eventos sensibles resaltados |
-| ¿Cómo está armada la red? | Mapa de VPC, subredes públicas/privadas, Transit Gateway, VPN, balanceadores y comparación entre cuentas |
+| Is everything OK today? | Traffic-light status per area, alarms, instance health and every VPN tunnel, including downtime in the last 24 h |
+| Why is a service not responding? | Port tests, VPC Flow Logs and the operating system console with translated timestamps |
+| Is my WAF actually protecting anything? | Flags rules in **Count** mode (they monitor but do not block), WAFs without logging and unprotected resources |
+| How is the database doing? | CPU, memory usage, connections and the reader's **replica lag**, from CloudWatch |
+| How secure is the account? | Security Hub findings explained in plain language: insecure configuration, missing Windows patches and CVEs by package |
+| Who changed what? | CloudTrail timeline with automated noise filtered out and sensitive events highlighted |
+| How is the network built? | Map of VPCs, public/private subnets, Transit Gateway, VPNs, load balancers and a side-by-side comparison of accounts |
 
-## Cómo funciona
+## How it works
 
 ```mermaid
 flowchart LR
-    U[Navegador<br/>localhost:8501] --> D[Dashboard Streamlit<br/>app.py]
-    T[Terminal] --> S[Scripts Bash<br/>scripts/*.sh]
-    D --> C[(Caché 5 min)]
+    U[Browser<br/>localhost:8501] --> D[Streamlit dashboard<br/>app.py]
+    T[Terminal] --> S[Bash scripts<br/>scripts/*.sh]
+    D --> C[(5-min cache)]
     D --> CLI[AWS CLI v2]
     S --> CLI
-    CLI -->|SSO · rol de solo lectura| A1[Cuenta prod]
-    CLI --> A2[Cuenta dev]
-    CLI --> A3[Cuenta red]
-    CLI --> A4[Cuenta seguridad]
+    CLI -->|SSO · read-only role| A1[Prod account]
+    CLI --> A2[Dev account]
+    CLI --> A3[Network account]
+    CLI --> A4[Security account]
 ```
 
-- **Sin credenciales nuevas:** reutiliza tu sesión de AWS IAM Identity Center (SSO). Un solo login sirve para todas las cuentas.
-- **Sin agentes ni servidores:** corre en tu equipo (Mac, Linux o WSL) y los datos no salen de él.
-- **Sin dependencias pesadas:** las consultas usan `aws ... --output json`; no requiere boto3.
-- **Consultas en paralelo** a todas las cuentas, con 5 minutos de caché para no repetir llamadas.
+- **No new credentials:** it reuses your AWS IAM Identity Center (SSO) session. One login covers every account.
+- **No agents, no servers:** it runs on your machine (macOS, Linux or WSL) and the data never leaves it.
+- **Lightweight:** queries use `aws ... --output json`; no boto3 required.
+- **Parallel queries** across all accounts, with a 5-minute cache to avoid repeated calls.
 
-## Herramientas y servicios utilizados
+## Tools and AWS services
 
-| Categoría | Herramientas |
+| Category | Tools |
 |---|---|
-| Acceso | AWS CLI v2, AWS IAM Identity Center (SSO), rol `ReadOnlyAccess` |
-| Observabilidad | Amazon CloudWatch (métricas y alarmas), VPC Flow Logs, CloudWatch Logs, consola de EC2 |
-| Seguridad | AWS Security Hub, Amazon Inspector, Amazon GuardDuty, AWS Config, AWS CloudTrail |
-| Perímetro | AWS WAF, AWS Firewall Manager, AWS Network Firewall, AWS Shield, Route 53 DNS Firewall, Security Groups y NACL |
-| Red | Amazon VPC (Shared VPC con AWS RAM), AWS Transit Gateway, AWS Site-to-Site VPN, Elastic Load Balancing |
-| Datos | Amazon RDS / Aurora (incluye retardo de réplica) |
+| Access | AWS CLI v2, AWS IAM Identity Center (SSO), `ReadOnlyAccess` role |
+| Observability | Amazon CloudWatch (metrics and alarms), VPC Flow Logs, CloudWatch Logs, EC2 console output |
+| Security | AWS Security Hub, Amazon Inspector, Amazon GuardDuty, AWS Config, AWS CloudTrail |
+| Perimeter | AWS WAF, AWS Firewall Manager, AWS Network Firewall, AWS Shield, Route 53 DNS Firewall, Security Groups and NACLs |
+| Network | Amazon VPC (Shared VPC with AWS RAM), AWS Transit Gateway, AWS Site-to-Site VPN, Elastic Load Balancing |
+| Data | Amazon RDS / Aurora (including replica lag) |
 | Dashboard | Python, Streamlit, pandas, Plotly |
-| Scripts | Bash, awk, `column` (compatibles con macOS, Linux y WSL) |
-| Complementarias | Prowler (auditoría CIS / ISO 27001 / NIST), Steampipe (SQL sobre AWS), nmap y netcat |
+| Scripts | Bash, awk, `column` (macOS, Linux and WSL compatible) |
+| Companion tools | Prowler (CIS / ISO 27001 / NIST audit), Steampipe (SQL over AWS), nmap and netcat |
 
-## Inicio rápido
+## Quick start
 
-### Requisitos
-- AWS CLI v2 con perfiles SSO configurados en `~/.aws/config`.
-- Python 3.10 o superior.
-- Un rol con permisos de solo lectura (por ejemplo `ReadOnlyAccess`, opcionalmente con `SecurityAudit`).
+### Requirements
+- AWS CLI v2 with SSO profiles configured in `~/.aws/config`.
+- Python 3.10 or later.
+- A read-only role (for example `ReadOnlyAccess`, optionally plus `SecurityAudit`).
 
-### 1. Probar sin AWS (modo demo)
+### 1. Try it without AWS (demo mode)
 ```bash
-git clone https://github.com/<tu-usuario>/aws-pulse-observability.git
-cd aws-pulse-observability/dashboard
-./iniciar_dashboard.sh --demo        # abre http://localhost:8501 con datos inventados
+git clone https://github.com/pablog765/AWS-pulse-observability.git
+cd AWS-pulse-observability/dashboard
+./iniciar_dashboard.sh --demo        # opens http://localhost:8501 with made-up data
 ```
 
-### 2. Usar con tus cuentas
+### 2. Use it with your accounts
 ```bash
-aws sso login --sso-session <tu-sesion> --use-device-code
-export AWS_PULSE_PROFILES="prod dev network security"   # tus perfiles
-export AWS_PULSE_ORG="Mi organización"                  # opcional: nombre en la cabecera
+aws sso login --sso-session <your-session> --use-device-code
+export AWS_PULSE_PROFILES="prod dev network security"   # your profiles
+export AWS_PULSE_ORG="My organization"                  # optional: name shown in the header
 cd dashboard && ./iniciar_dashboard.sh
 ```
-La primera vez instala streamlit, pandas y plotly en un entorno aislado (`.venv`), salvo que ya estén instalados en el sistema. En Windows, `iniciar_dashboard.bat` levanta WSL, inicia la app y abre el navegador.
+On first run it installs streamlit, pandas and plotly into an isolated environment (`.venv`), unless they are already installed system-wide. On Windows, `iniciar_dashboard.bat` starts WSL, launches the app and opens the browser.
 
-### 3. Scripts de terminal
+### 3. Terminal scripts
 ```bash
 cd scripts && chmod +x *.sh
-./aws-health-check.sh                 # ¿está todo bien hoy?
-./aws-architecture.sh network         # mapa de la red y servicios
-DAYS=1 CONSOLE=1 ./aws-changes.sh     # cambios de hoy + consola de cada EC2
-./aws-firewalls.sh prod security      # WAF y políticas de Firewall Manager
+./aws-health-check.sh                 # is everything OK today?
+./aws-architecture.sh network         # network and services map
+DAYS=1 CONSOLE=1 ./aws-changes.sh     # today's changes + each EC2 console
+./aws-firewalls.sh prod security      # WAF and Firewall Manager policies
 ```
-Sin argumentos usan `AWS_PULSE_PROFILES` o, si no existe, todos los perfiles de `~/.aws/config`. Los reportes quedan en `scripts/reportes/`.
+Without arguments they use `AWS_PULSE_PROFILES` or, if it is not set, every profile in `~/.aws/config`. Reports are written to `scripts/reportes/`.
 
-## Módulos del dashboard
+## Dashboard modules
 
-| Módulo | Contenido |
+| Module | Content |
 |---|---|
-| **Sesión** | Estado SSO por cuenta y botón de inicio de sesión con código de dispositivo |
-| **Resumen** | Indicadores clave y semáforo por área |
-| **Salud y VPN** | Túneles VPN (OK / sin redundancia / caída), horas caídas en 24 h, alarmas, mantenimientos, inventario EC2 (IP pública, IMDSv2) |
-| **Bases de datos** | CPU, memoria, conexiones y retardo de réplica, con ventanas de 1 h a 7 días |
-| **WAF y firewalls** | Acción efectiva por grupo de reglas, reglas forzadas a Count, logging, tráfico diario, reglas que más detectan, Firewall Manager |
-| **Security Hub** | Hallazgos por cuenta y severidad, explicaciones en español, enlace a la remediación y exportación a CSV |
-| **Cambios recientes** | Línea de tiempo de CloudTrail filtrable por usuario y servicio |
+| **Session** | SSO status per account and a sign-in button using the device code flow |
+| **Summary** | Key indicators and a traffic-light status per area |
+| **Health & VPN** | VPN tunnels (OK / no redundancy / down), hours down in the last 24 h, alarms, scheduled maintenance, EC2 inventory (public IP, IMDSv2) |
+| **Databases** | CPU, memory, connections and replica lag, with windows from 1 hour to 7 days |
+| **WAF & firewalls** | Effective action per rule group, rules forced to Count, logging, daily traffic, top-matching rules, Firewall Manager |
+| **Security Hub** | Findings by account and severity, plain-language explanations, remediation links and CSV export |
+| **Recent changes** | CloudTrail timeline filterable by user and service |
 
-| Salud y VPN | WAF |
+| Health & VPN | WAF |
 |---|---|
-| ![Salud y VPN](docs/img/02-salud-vpn.png) | ![WAF](docs/img/04-waf.png) |
-| **Bases de datos** | **Security Hub** |
+| ![Health and VPN](docs/img/02-salud-vpn.png) | ![WAF](docs/img/04-waf.png) |
+| **Databases** | **Security Hub** |
 | ![RDS](docs/img/03-rds.png) | ![Security Hub](docs/img/05-security-hub.png) |
 
-## Scripts de terminal
+## Terminal scripts
 
-| Script | Pregunta que responde | Salida |
+| Script | Question it answers | Output |
 |---|---|---|
-| `aws-health-check.sh` | ¿Está todo bien hoy? | Inventario EC2, alarmas, VPN por túnel, Security Hub traducido, GuardDuty, logins de las últimas 24 h |
-| `aws-architecture.sh` | ¿Qué hay y cómo se conecta? | Subredes PÚBLICA / PRIVADA / AISLADA, TGW, VPN, cadena ALB → target group → instancia, RDS, WAF y tabla comparativa entre cuentas |
-| `aws-changes.sh` | ¿Qué cambió y qué está pasando? | Cambios de CloudTrail traducidos, eventos sensibles, últimos logs y consola del SO con hora local |
-| `aws-firewalls.sh` | ¿Qué protege el perímetro? | Network Firewall, reglas efectivas del WAF (fases pre/cuenta/post de FMS), Shield, DNS Firewall, políticas de Firewall Manager |
+| `aws-health-check.sh` | Is everything OK today? | EC2 inventory, alarms, per-tunnel VPN status, translated Security Hub findings, GuardDuty, console logins in the last 24 h |
+| `aws-architecture.sh` | What is there and how is it connected? | PUBLIC / PRIVATE / ISOLATED subnets, TGW, VPN, ALB → target group → instance chain, RDS, WAF and a cross-account comparison table |
+| `aws-changes.sh` | What changed and what is happening? | Translated CloudTrail changes, sensitive events, latest logs and OS console with local time |
+| `aws-firewalls.sh` | What protects the perimeter? | Network Firewall, effective WAF rules (FMS pre / account / post phases), Shield, DNS Firewall, Firewall Manager policies |
 
-Variables de `aws-changes.sh`: `DAYS` (7), `CONSOLE` (0), `LOGTOP` (8), `LOGLINES` (6), `TOPN` (25). Guía completa de comandos en [docs/COMANDOS.md](docs/COMANDOS.md).
+`aws-changes.sh` variables: `DAYS` (7), `CONSOLE` (0), `LOGTOP` (8), `LOGLINES` (6), `TOPN` (25). Full command guide in [docs/COMMANDS.md](docs/COMMANDS.md).
 
-## Seguridad
+## Security
 
-- **Solo lectura:** ningún comando modifica recursos.
-- **Los datos se quedan en tu equipo:** el dashboard no guarda nada en disco y los scripts escriben en `reportes/`, carpeta excluida por `.gitignore`.
-- **Nunca subas reportes reales a un repositorio:** contienen IPs, IDs de cuenta y hallazgos de seguridad.
-- **Capturas y demo con datos ficticios:** cuentas 111111111111…, IPs de documentación (RFC 5737).
+- **Read-only:** no command modifies any resource.
+- **Data stays on your machine:** the dashboard writes nothing to disk; the scripts write to `reportes/`, which is excluded by `.gitignore`.
+- **Never commit real reports:** they contain IPs, account IDs and security findings.
+- **Demo data and screenshots are fictitious:** accounts 111111111111…, documentation IP ranges (RFC 5737).
 
-## Costos
+## Cost
 
-Las consultas de inventario y configuración no tienen costo por llamada. Solo las métricas de CloudWatch pedidas con `GetMetricData` se cobran (del orden de USD 0,01 por cada 1.000 métricas): recorrer todo el dashboard pide unas 75 métricas. El costo se carga a la cuenta consultada.
+Inventory and configuration calls have no per-request charge. Only CloudWatch metrics requested through `GetMetricData` are billed (about USD 0.01 per 1,000 metrics); browsing the whole dashboard requests roughly 75 metrics. The cost is charged to the account being queried.
 
-## Hoja de ruta
+## Roadmap
 
-- [ ] Histórico local (SQLite) con gráficos de tendencia: caídas de VPN, hallazgos críticos, CPU de RDS
-- [ ] Tema visual personalizable y modo oscuro
-- [ ] Alertas por correo o Teams cuando un indicador pasa a crítico
-- [ ] Exportar el resumen a PDF
-- [ ] Más servicios: ECS, Lambda, API Gateway, costos (Cost Explorer)
+- [ ] Local history (SQLite) with trend charts: VPN outages, critical findings, RDS CPU
+- [ ] Customizable theme and dark mode
+- [ ] Email or Teams alerts when an indicator turns critical
+- [ ] Export the summary to PDF
+- [ ] More services: ECS, Lambda, API Gateway, costs (Cost Explorer)
 
-## Estructura
+## Repository layout
 
 ```
-aws-pulse-observability/
+AWS-pulse-observability/
 ├── dashboard/
-│   ├── app.py                  # interfaz: páginas, semáforos y gráficos
-│   ├── awsdata.py              # consultas a AWS y traducciones al español
-│   ├── iniciar_dashboard.sh    # lanzador Mac / Linux / WSL (--demo)
-│   ├── iniciar_dashboard.bat   # lanzador Windows: levanta WSL y abre el navegador
+│   ├── app.py                  # UI: pages, traffic lights and charts
+│   ├── awsdata.py              # AWS queries and plain-language translations
+│   ├── iniciar_dashboard.sh    # macOS / Linux / WSL launcher (--demo)
+│   ├── iniciar_dashboard.bat   # Windows launcher: starts WSL and opens the browser
 │   ├── requirements.txt
-│   ├── .streamlit/config.toml  # tema y puerto
-│   └── demo/                   # AWS CLI simulado con datos ficticios
+│   ├── .streamlit/config.toml  # theme and port
+│   └── demo/                   # simulated AWS CLI with fictitious data
 ├── scripts/                    # aws-health-check, aws-architecture, aws-changes, aws-firewalls
 └── docs/
-    ├── COMANDOS.md             # conexión, comandos clave y errores frecuentes
-    └── img/                    # capturas (modo demo)
+    ├── COMMANDS.md / COMANDOS.md   # connection, key commands and common errors
+    └── img/                        # screenshots (demo mode)
 ```
 
-## Origen
+## Background
 
-Nació del diagnóstico de un servicio que no respondía en un entorno AWS multicuenta con red centralizada (Shared VPC y Transit Gateway). Lo que empezó como una prueba de puertos terminó en un kit para revisar salud, red, perímetro y postura de seguridad de todo el ecosistema con un rol de solo lectura. Desarrollado con el apoyo de Claude (Anthropic).
+It started as the troubleshooting of an unresponsive service in a multi-account AWS environment with centralized networking (Shared VPC and Transit Gateway). What began as a port test turned into a toolkit to review health, network, perimeter and security posture across the whole ecosystem with a read-only role. Built with the help of Claude (Anthropic).
 
-## Autor
+## Author
 
 **Pablo Guachamin**, Senior Network & Cloud Security Engineer (Quito, Ecuador).
 
-Licencia [MIT](LICENSE).
+[MIT](LICENSE) license.
