@@ -1,0 +1,13 @@
+[theme]
+primaryColor = "#1F4E79"
+base = "light"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+port = 8501

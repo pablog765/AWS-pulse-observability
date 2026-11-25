@@ -1,0 +1,13 @@
+# Configuración de ejemplo para el MODO DEMO (no se usa con AWS real)
+[sso-session mi-sso]
+sso_start_url = https://d-0000000000.awsapps.com/start
+sso_region = us-east-1
+
+[profile prod]
+sso_session = mi-sso
+[profile dev]
+sso_session = mi-sso
+[profile network]
+sso_session = mi-sso
+[profile security]
+sso_session = mi-sso

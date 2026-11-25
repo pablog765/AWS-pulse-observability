@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""AWS CLI simulado para el MODO DEMO de AWS Pulse. Todos los datos son inventados."""
+import json, sys, datetime as dt, random, os
+
+a = sys.argv[1:]
+def arg(name, default=None):
+    return a[a.index(name) + 1] if name in a else default
+prof = arg("--profile", "default")
+svc, op = (a[0], a[1]) if len(a) > 1 else (a[0] if a else "", "")
+now = dt.datetime.now(dt.timezone.utc)
+iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+acct = {"prod": "111111111111", "dev": "222222222222", "network": "333333333333", "security": "444444444444"}.get(prof)
+out = lambda o: (print(json.dumps(o)), sys.exit(0))
+
+if os.environ.get("MOCK_EXPIRED") == prof:
+    print("Error loading SSO Token: Token for mi-sso does not exist", file=sys.stderr); sys.exit(255)
+
+if (svc, op) == ("sts", "get-caller-identity"):
+    out({"Account": acct, "Arn": f"arn:aws:sts::{acct}:assumed-role/AWSReservedSSO_ReadOnlyAccess_demo/analista@example.com"})
+
+if (svc, op) == ("sso", "login"):
+    print("Attempting to open your default browser.")
+    print("If the browser does not open, open the following URL:\n\nhttps://d-0000000000.awsapps.com/start/#/device\n\nThen enter the code:\n\nABCD-EFGH", flush=True)
+    import time; time.sleep(2); print("Successfully logged into Start URL: https://d-0000000000.awsapps.com/start"); sys.exit(0)
+
+if (svc, op) == ("ec2", "describe-instances"):
+    inst = {"prod": [("APP-FRONTEND-A", "i-0a1b2c3d4e5f60001", "10.20.1.10", None, "Windows", "optional"),
+                    ("APP-FRONTEND-B", "i-0a1b2c3d4e5f60002", "10.20.2.10", None, "Windows", "optional"),
+                    ("BASTION", "i-0a1b2c3d4e5f60003", "10.20.5.10", "203.0.113.10", "Windows", "optional"),
+                    ("DATA-COLLECTOR", "i-0a1b2c3d4e5f60004", "10.10.1.20", "203.0.113.20", "Linux/UNIX", "optional")],
+            "dev": [("DEV-APP", "i-0b1b2c3d4e5f60001", "10.30.1.10", None, "Linux/UNIX", "required"),
+                      ("DEV-APP-PUBLIC", "i-0b1b2c3d4e5f60002", "10.10.1.30", "203.0.113.30", "Linux/UNIX", "optional"),
+                      ("Jmeter-LoadTest", "i-0b1b2c3d4e5f60003", "10.30.1.40", None, "Linux/UNIX", "required")]}.get(prof, [])
+    out({"Reservations": [{"Instances": [{"InstanceId": i, "Tags": [{"Key": "Name", "Value": n}],
+        "State": {"Name": "stopped" if n.startswith("Jmeter") else "running"}, "InstanceType": "m6a.xlarge",
+        "PrivateIpAddress": ip, **({"PublicIpAddress": pub} if pub else {}), "PlatformDetails": so,
+        "MetadataOptions": {"HttpTokens": tok}, "LaunchTime": "2026-04-18T03:41:00+00:00"}]} for n, i, ip, pub, so, tok in inst]})
+
+if (svc, op) == ("ec2", "describe-instance-status"):
+    out({"InstanceStatuses": [{"InstanceId": "i-0a1b2c3d4e5f60002", "InstanceStatus": {"Status": "ok"}, "SystemStatus": {"Status": "ok"},
+         "Events": [{"Code": "system-reboot", "NotBefore": iso(now + dt.timedelta(days=3))}]}] if prof == "prod" else []})
+
+if (svc, op) == ("cloudwatch", "describe-alarms"):
+    al = {"prod": [("app-db-cpu-high", "CPUUtilization", 85.0)], "dev": [("DEV-APP-CPU-LOW", "CPUUtilization", 50.0)]}.get(prof, [])
+    out({"MetricAlarms": [{"AlarmName": n, "StateValue": "ALARM", "StateUpdatedTimestamp": iso(now - dt.timedelta(hours=3)),
+         "MetricName": m, "Threshold": t, "StateReason": "Threshold Crossed: 3 datapoints"} for n, m, t in al]})
+
+if (svc, op) == ("ec2", "describe-vpn-connections"):
+    if prof != "network": out({"VpnConnections": []})
+    def v(vid, name, cgw, static, tun):
+        return {"VpnConnectionId": vid, "State": "available", "CustomerGatewayId": cgw, "Tags": [{"Key": "Name", "Value": name}],
+                "Options": {"StaticRoutesOnly": static},
+                "VgwTelemetry": [{"OutsideIpAddress": ip, "Status": s, "LastStatusChange": iso(now - dt.timedelta(hours=h)),
+                                  "AcceptedRouteCount": r, "StatusMessage": m} for ip, s, h, r, m in tun]}
+    out({"VpnConnections": [
+        v("vpn-1", "vpn-to-hq-primary-bgp", "cgw-1", False, [("192.0.2.11", "UP", 85, 13, "13 BGP ROUTES"), ("192.0.2.12", "UP", 85, 13, "13 BGP ROUTES")]),
+        v("vpn-2", "vpn-to-hq-backup-bgp", "cgw-2", False, [("192.0.2.21", "UP", 85, 13, ""), ("192.0.2.22", "UP", 85, 13, "")]),
+        v("vpn-3", "vpn-to-partner-static", "cgw-3", True, [("192.0.2.31", "DOWN", 700, 0, ""), ("192.0.2.32", "DOWN", 14, 0, "")])]})
+
+if (svc, op) == ("ec2", "describe-customer-gateways"):
+    out({"CustomerGateways": [{"CustomerGatewayId": "cgw-1", "IpAddress": "198.51.100.10", "Tags": [{"Key": "Name", "Value": "cgw-hq-primary"}]},
+                              {"CustomerGatewayId": "cgw-2", "IpAddress": "198.51.100.20", "Tags": [{"Key": "Name", "Value": "cgw-hq-backup"}]},
+                              {"CustomerGatewayId": "cgw-3", "IpAddress": "198.51.100.30", "Tags": [{"Key": "Name", "Value": "cgw-partner"}]}]})
+
+if (svc, op) == ("cloudwatch", "get-metric-statistics"):
+    dims = arg("--dimensions", "")
+    down = "192.0.2.31" in dims or "192.0.2.32" in dims
+    out({"Datapoints": [{"Timestamp": iso(now - dt.timedelta(hours=h)), "Minimum": 0 if down and (h < 14 or "192.0.2.31" in dims) else 1} for h in range(24)]})
+
+if (svc, op) == ("rds", "describe-db-instances"):
+    if prof != "prod": out({"DBInstances": []})
+    out({"DBInstances": [
+        {"DBInstanceIdentifier": "app-db-writer", "Engine": "aurora-mysql", "EngineVersion": "8.0", "DBInstanceClass": "db.r6g.large",
+         "DBInstanceStatus": "available", "MultiAZ": False, "DBClusterIdentifier": "app-db", "StorageEncrypted": False, "BackupRetentionPeriod": 1, "PubliclyAccessible": False},
+        {"DBInstanceIdentifier": "app-db-reader", "Engine": "aurora-mysql", "EngineVersion": "8.0", "DBInstanceClass": "db.r6g.large",
+         "DBInstanceStatus": "available", "MultiAZ": False, "DBClusterIdentifier": "app-db", "StorageEncrypted": False, "BackupRetentionPeriod": 1, "PubliclyAccessible": False}]})
+
+if (svc, op) == ("rds", "describe-db-clusters"):
+    out({"DBClusters": [{"DBClusterMembers": [{"DBInstanceIdentifier": "app-db-writer", "IsClusterWriter": True},
+                                              {"DBInstanceIdentifier": "app-db-reader", "IsClusterWriter": False}]}]} if prof == "prod" else {"DBClusters": []})
+
+if (svc, op) == ("ec2", "describe-instance-types"):
+    out({"InstanceTypes": [{"MemoryInfo": {"SizeInMiB": 16384}}]})
+
+if (svc, op) == ("cloudwatch", "get-metric-data"):
+    qs = json.loads(arg("--metric-data-queries"))
+    start = dt.datetime.fromisoformat(arg("--start-time").replace("Z", "+00:00"))
+    res = []
+    random.seed(7)
+    for q in qs:
+        ms = q["MetricStat"]; name = ms["Metric"]["MetricName"]; per = ms["Period"]
+        n = min(int((now - start).total_seconds() // per), 400)
+        ts = [now - dt.timedelta(seconds=per * i) for i in range(n)]
+        base = {"CPUUtilization": 72, "FreeableMemory": 3.1 * 1024 ** 3, "DatabaseConnections": 140, "AuroraReplicaLag": 25,
+                "AllowedRequests": 160000, "BlockedRequests": 0, "CountedRequests": 22000}.get(name, 50)
+        if ms["Metric"]["Namespace"] == "AWS/WAFV2" and any(d["Name"] == "RuleGroup" or (d["Name"] == "Rule" and d["Value"] != "ALL") for d in ms["Metric"]["Dimensions"]):
+            rule = [d["Value"] for d in ms["Metric"]["Dimensions"] if d["Name"] == "Rule"][0]
+            base = {"SizeRestrictions_BODY": 21800, "AWSManagedIPReputationList": 136, "ExploitablePaths_URIPATH": 24,
+                    "SQLi_BODY": 21, "UserAgent_BadBots_HEADER": 19, "NoUserAgent_HEADER": 9}.get(rule, 1)
+        vals = [max(0, base * (1 + 0.25 * random.uniform(-1, 1)) + (20 if name == "CPUUtilization" and i < 30 else 0)) for i in range(n)]
+        res.append({"Id": q["Id"], "Timestamps": [iso(t) for t in ts], "Values": vals})
+    out({"MetricDataResults": res})
+
+if (svc, op) == ("cloudwatch", "list-metrics"):
+    rules = ["SizeRestrictions_BODY", "AWSManagedIPReputationList", "ExploitablePaths_URIPATH", "SQLi_BODY", "UserAgent_BadBots_HEADER", "NoUserAgent_HEADER", "ALL"]
+    out({"Metrics": [{"Dimensions": [{"Name": "Rule", "Value": r}, {"Name": "Region", "Value": "us-east-1"}] +
+                      ([{"Name": "RuleGroup", "Value": "AWS#Managed"}] if r != "ALL" else [])} for r in rules] if prof == "prod" else []})
+
+if (svc, op) == ("wafv2", "list-web-acls"):
+    out({"WebACLs": [{"Name": "FMManagedWebACLV2-baseline-waf-1700000000000", "Id": "id1",
+                      "ARN": "arn:aws:wafv2:us-east-1:111111111111:regional/webacl/FMManagedWebACLV2-baseline-waf-1700000000000/id1"}]} if prof in ("prod", "dev") else {"WebACLs": []})
+
+if (svc, op) == ("wafv2", "get-web-acl"):
+    def g(name, prio, n):
+        return {"Name": f"PREFMManaged-{name}", "Priority": prio, "OverrideAction": {"None": {}}, "VisibilityConfig": {"MetricName": name},
+                "FirewallManagerStatement": {"ManagedRuleGroupStatement": {"VendorName": "AWS", "Name": name,
+                "RuleActionOverrides": [{"Name": f"r{i}", "ActionToUse": {"Count": {}}} for i in range(n)]}}}
+    out({"WebACL": {"DefaultAction": {"Allow": {}}, "Rules": [],
+         "PreProcessFirewallManagerRuleGroups": [g("AWSManagedRulesKnownBadInputsRuleSet", 0, 12), g("AWSManagedRulesCommonRuleSet", 1, 22)],
+         "PostProcessFirewallManagerRuleGroups": [g("AWSManagedRulesAmazonIpReputationList", 0, 3), g("AWSManagedRulesSQLiRuleSet", 1, 5)]}})
+
+if (svc, op) == ("wafv2", "get-logging-configuration"):
+    print("WAFNonexistentItemException", file=sys.stderr); sys.exit(254)
+
+if (svc, op) == ("wafv2", "list-resources-for-web-acl"):
+    out({"ResourceArns": ["arn:aws:elasticloadbalancing:us-east-1:111111111111:loadbalancer/app/alb-frontend-prod/a1b2"]} if arg("--resource-type") == "APPLICATION_LOAD_BALANCER" else {"ResourceArns": []})
+
+if (svc, op) == ("network-firewall", "list-firewalls"):
+    out({"Firewalls": []})
+
+if (svc, op) == ("fms", "get-admin-account"):
+    out({"AdminAccount": "444444444444"})
+if (svc, op) == ("fms", "list-policies"):
+    if prof != "security":
+        print("Operation ListPolicies is only available to AWS Firewall Manager Administrators.", file=sys.stderr); sys.exit(254)
+    out({"PolicyList": [{"PolicyName": "baseline-waf", "PolicyId": "p-1", "SecurityServiceType": "WAFV2",
+                         "ResourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer", "RemediationEnabled": True}]})
+if (svc, op) == ("fms", "get-policy"):
+    out({"Policy": {"IncludeMap": {"ACCOUNT": ["111111111111"]}, "ResourceTags": [{"Key": "Waf", "Value": "Si"}],
+                    "SecurityServicePolicyData": {"ManagedServiceData": json.dumps({"type": "WAFV2", "defaultAction": {"type": "ALLOW"}})}}})
+if (svc, op) == ("fms", "list-compliance-status"):
+    out({"PolicyComplianceStatusList": [{"MemberAccount": a, "EvaluationResults": [{"ComplianceStatus": "COMPLIANT", "ViolatorCount": 0}]}
+                                        for a in ("555555555555", "222222222222", "111111111111")]})
+
+if (svc, op) == ("securityhub", "get-findings"):
+    if prof not in ("prod", "dev"): out([])
+    f = []
+    for _ in range(7): f.append(("HIGH", "EC2.18 Security groups should only allow...", "EC2.18", "Security Hub", "arn:aws:ec2:us-east-1:1:security-group/sg-1"))
+    for i in ("i-0a1b2c3d4e5f60001", "i-0a1b2c3d4e5f60002", "i-0a1b2c3d4e5f60003", "i-0a1b2c3d4e5f60004"):
+        f.append(("HIGH", "EC2.8 IMDSv2", "EC2.8", "Security Hub", f"arn:aws:ec2:us-east-1:1:instance/{i}"))
+    f.append(("CRITICAL", "EC2.19 high risk ports", "EC2.19", "Security Hub", "arn:aws:ec2:us-east-1:1:security-group/sg-2"))
+    for kb in ("KB5120229", "KB5120242", "KB5122882"):
+        f.append(("HIGH", kb, None, "Inspector", "arn:aws:ec2:us-east-1:1:instance/i-0a1b2c3d4e5f60002"))
+    for kb in ("KB5120229", "KB5122882"):
+        f.append(("HIGH", kb, None, "Inspector", "arn:aws:ec2:us-east-1:1:instance/i-0a1b2c3d4e5f60001"))
+    for i in range(42): f.append(("CRITICAL" if i % 3 == 0 else "HIGH", f"CVE-2026-{1000 + i} - openssl", None, "Inspector", "arn:aws:ecr:us-east-1:1:repository/web_api/sha256:8ed8"))
+    for i in range(22): f.append(("CRITICAL", f"CVE-2026-{2000 + i} - perl", None, "Inspector", "arn:aws:ecr:us-east-1:1:repository/report_api/sha256:f9dd"))
+    for i in range(30): f.append(("MEDIUM", f"CVE-2026-{3000 + i}", None, "Inspector", "arn:aws:ec2:us-east-1:1:instance/i-0a1b2c3d4e5f60001"))
+    out([{"sev": s, "titulo": t, "control": c, "producto": p, "recurso": r, "tipo_recurso": "x",
+          "actualizado": iso(now), "remediacion": "https://docs.aws.amazon.com/securityhub/" if c else None} for s, t, c, p, r in f])
+
+if (svc, op) == ("cloudtrail", "lookup-events"):
+    ev = [("ec2.amazonaws.com", "CreateImage", "AWSBackup-DefaultRole", "ami-01082a"),
+          ("ec2.amazonaws.com", "DeleteSnapshot", "AWSBackup-DefaultRole", "snap-0d83"),
+          ("ec2.amazonaws.com", "AuthorizeSecurityGroupIngress", "soporte@proveedor.example", "sg-0123456789abcdef0"),
+          ("ecs.amazonaws.com", "UpdateService", "devops@proveedor.example", "arn:aws:ecs:us-east-1:1:service/prod/web-api"),
+          ("ssm.amazonaws.com", "UpdateInstanceAssociationStatus", "i-0a1b2c3d4e5f60002", None),
+          ("config.amazonaws.com", "PutEvaluations", "configLambdaExecution", None),
+          ("rds.amazonaws.com", "ModifyDBInstance", "soporte@proveedor.example", "app-db-reader")]
+    out([{"fecha": iso(now - dt.timedelta(hours=7 * i + j)), "fuente": s, "accion": e, "usuario": u, "recurso": r}
+         for i in range(12) for j, (s, e, u, r) in enumerate(ev)] if prof in ("prod", "dev") else [])
+
+print(f"mock: comando no simulado: {' '.join(a[:2])}", file=sys.stderr)
+sys.exit(254)

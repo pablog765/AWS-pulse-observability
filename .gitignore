@@ -1,0 +1,17 @@
+# Entornos y cachés
+.venv/
+__pycache__/
+*.pyc
+
+# Resultados con datos reales: NUNCA subirlos
+reportes/
+scripts/reportes/
+prowler-out/
+boot-times.txt
+.boot-cache
+*.csv
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db
