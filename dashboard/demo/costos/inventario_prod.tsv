@@ -1,0 +1,52 @@
+cuenta	servicio	recurso	detalle	cantidad	unidad
+111111111111	EC2	instancia	m6a.xlarge|Windows|APP-FRONTEND-B	1	instancia-24x7
+111111111111	EC2	instancia	m6a.xlarge|Windows|APP-FRONTEND-A	1	instancia-24x7
+111111111111	EC2	instancia	t3.micro|Windows|BASTION	1	instancia-24x7
+111111111111	EC2	instancia	t3a.2xlarge|Linux/UNIX|DATA-COLLECTOR	1	instancia-24x7
+111111111111	EC2	instancias detenidas	solo pagan EBS	0	instancia
+111111111111	EBS	volumen	gp3|iops=3000|tput=125|in-use	100	GB-mes
+111111111111	EBS	volumen	gp3|iops=3000|tput=125|in-use	100	GB-mes
+111111111111	EBS	volumen	gp2|iops=100|tput=0|in-use	30	GB-mes
+111111111111	EBS	volumen	gp3|iops=3000|tput=125|in-use	240	GB-mes
+111111111111	EBS	snapshots	31 snapshots (tamaño de origen, real suele ser menor)	3380	GB-mes
+111111111111	VPC	IPv4 pública en uso	ENIs con IP pública	4	IP-hora-24x7
+111111111111	VPC	Elastic IP sin asociar	desperdicio	0	IP-hora-24x7
+111111111111	VPC	NAT Gateway	hora	0	gateway-24x7
+111111111111	VPC	Interface endpoints	0 endpoints	0	endpoint-AZ-24x7
+111111111111	VPN	Site-to-Site VPN	conexión	0	conexion-24x7
+111111111111	TGW	attachments vistos	en esta cuenta (cobra al dueño del attachment)	0	attachment-24x7
+111111111111	VPN	Client VPN	endpoints	0	endpoint
+111111111111	ELB	application	load balancer	4	lb-24x7
+111111111111	ELB	network	load balancer	1	lb-24x7
+111111111111	ELB	classic	load balancer	0	lb-24x7
+111111111111	RDS	instancia	db.t3.medium|mariadb|multiAZ=False|app-db-reader	1	instancia-24x7
+111111111111	RDS	almacenamiento	gp3|iops=3000|multiAZ=False|app-db-reader	200	GB-mes
+111111111111	RDS	instancia	db.m6g.large|mariadb|multiAZ=True|app-db-writer	1	instancia-24x7
+111111111111	RDS	almacenamiento	gp3|iops=3000|multiAZ=True|app-db-writer	200	GB-mes
+111111111111	RDS	snapshots manuales	tamaño asignado	200	GB-mes
+111111111111	ECS	servicio	orders-api|FARGATE|cpu,mem=1024,2048	2	tarea-24x7
+111111111111	ECS	servicio	reports-api|FARGATE|cpu,mem=1024,2048	2	tarea-24x7
+111111111111	Lambda	funciones	costo por uso	1	funcion
+111111111111	APIGW	REST/HTTP APIs	costo por request	2	api
+111111111111	ECR	imágenes	almacenamiento	0.44	GB-mes
+111111111111	S3	buckets	2 buckets (región us-east-1)	0.0	GB-mes
+111111111111	EFS	file systems	almacenamiento	0.0	GB-mes
+111111111111	DynamoDB	tablas		0	tabla
+111111111111	CloudWatch	logs almacenados	total	1.15	GB-mes
+111111111111	CloudWatch	logs ingeridos	30 días	0.0	GB
+111111111111	CloudWatch	alarmas	estándar	14	alarma
+111111111111	CloudWatch	dashboards		1	dashboard
+111111111111	CloudTrail	trails	el 1.º de gestión es gratis	1	trail
+111111111111	Config	recorder	grabando=True	1	info
+111111111111	SecurityHub	habilitado	si	1	info
+111111111111	GuardDuty	habilitado	si	1	info
+111111111111	Inspector	estado	ENABLED	1	info
+111111111111	KMS	claves de cliente		0	clave-mes
+111111111111	SecretsManager	secretos		0	secreto-mes
+111111111111	WAF	web ACLs	regional=1 cloudfront=0	1	acl-mes
+111111111111	WAF	requests inspeccionados	30 días	0.0	millon
+111111111111	NetworkFirewall	firewalls	costoso si existe	0	endpoint-24x7
+111111111111	FirewallManager	políticas	solo visible en cuenta admin	0	politica-mes
+111111111111	ShieldAdvanced	suscripción	no	1	info
+111111111111	Route53	zonas hospedadas		0	zona-mes
+111111111111	Backup	recovery points		0	punto

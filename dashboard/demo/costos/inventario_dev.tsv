@@ -1,0 +1,54 @@
+cuenta	servicio	recurso	detalle	cantidad	unidad
+222222222222	EC2	instancia	r6a.xlarge|Linux/UNIX|DEV-APP	1	instancia-24x7
+222222222222	EC2	instancia	m5a.large|Linux/UNIX|REPORTS	1	instancia-24x7
+222222222222	EC2	instancia	t3a.small|Linux/UNIX|BASTION	1	instancia-24x7
+222222222222	EC2	instancia	m5a.large|Linux/UNIX|DEV-APP-PUBLIC	1	instancia-24x7
+222222222222	EC2	instancias detenidas	solo pagan EBS	1	instancia
+222222222222	EBS	volumen	gp3|iops=3000|tput=125|in-use	30	GB-mes
+222222222222	EBS	volumen	gp3|iops=3000|tput=125|in-use	30	GB-mes
+222222222222	EBS	volumen	gp3|iops=3000|tput=125|in-use	100	GB-mes
+222222222222	EBS	volumen	gp3|iops=3000|tput=125|in-use	30	GB-mes
+222222222222	EBS	volumen	gp3|iops=3000|tput=125|in-use	8	GB-mes
+222222222222	EBS	volumen	gp3|iops=3000|tput=125|in-use	70	GB-mes
+222222222222	EBS	volumen	gp3|iops=3000|tput=125|in-use	70	GB-mes
+222222222222	EBS	snapshots	24 snapshots (tamaño de origen, real suele ser menor)	1224	GB-mes
+222222222222	VPC	IPv4 pública en uso	ENIs con IP pública	4	IP-hora-24x7
+222222222222	VPC	Elastic IP sin asociar	desperdicio	0	IP-hora-24x7
+222222222222	VPC	NAT Gateway	hora	0	gateway-24x7
+222222222222	VPC	Interface endpoints	0 endpoints	0	endpoint-AZ-24x7
+222222222222	VPN	Site-to-Site VPN	conexión	0	conexion-24x7
+222222222222	TGW	attachments vistos	en esta cuenta (cobra al dueño del attachment)	0	attachment-24x7
+222222222222	VPN	Client VPN	endpoints	0	endpoint
+222222222222	ELB	application	load balancer	1	lb-24x7
+222222222222	ELB	classic	load balancer	0	lb-24x7
+222222222222	RDS	instancia	db.t3.medium|postgres|multiAZ=False|dev-db-reader	1	instancia-24x7
+222222222222	RDS	almacenamiento	gp3|iops=3000|multiAZ=False|dev-db-reader	100	GB-mes
+222222222222	RDS	instancia	db.m6g.large|postgres|multiAZ=True|dev-db-writer	1	instancia-24x7
+222222222222	RDS	almacenamiento	gp3|iops=3000|multiAZ=True|dev-db-writer	100	GB-mes
+222222222222	RDS	instancia	db.m6g.large|postgres|multiAZ=True|dev-db-writer-old	1	instancia-24x7
+222222222222	RDS	almacenamiento	gp3|iops=3000|multiAZ=True|dev-db-writer-old	100	GB-mes
+222222222222	RDS	snapshots manuales	tamaño asignado	200	GB-mes
+222222222222	Lambda	funciones	costo por uso	1	funcion
+222222222222	APIGW	REST/HTTP APIs	costo por request	0	api
+222222222222	ECR	imágenes	almacenamiento	0.0	GB-mes
+222222222222	S3	buckets	1 buckets (región us-east-1)	0.0	GB-mes
+222222222222	EFS	file systems	almacenamiento	157.68	GB-mes
+222222222222	DynamoDB	tablas		0	tabla
+222222222222	CloudWatch	logs almacenados	total	0.14	GB-mes
+222222222222	CloudWatch	logs ingeridos	30 días	0.0	GB
+222222222222	CloudWatch	alarmas	estándar	2	alarma
+222222222222	CloudWatch	dashboards		0	dashboard
+222222222222	CloudTrail	trails	el 1.º de gestión es gratis	1	trail
+222222222222	Config	recorder	grabando=True	1	info
+222222222222	SecurityHub	habilitado	si	1	info
+222222222222	GuardDuty	habilitado	si	1	info
+222222222222	Inspector	estado	ENABLED	1	info
+222222222222	KMS	claves de cliente		0	clave-mes
+222222222222	SecretsManager	secretos		0	secreto-mes
+222222222222	WAF	web ACLs	regional=1 cloudfront=0	1	acl-mes
+222222222222	WAF	requests inspeccionados	30 días	0.0	millon
+222222222222	NetworkFirewall	firewalls	costoso si existe	0	endpoint-24x7
+222222222222	FirewallManager	políticas	solo visible en cuenta admin	0	politica-mes
+222222222222	ShieldAdvanced	suscripción	no	1	info
+222222222222	Route53	zonas hospedadas		0	zona-mes
+222222222222	Backup	recovery points		0	punto

@@ -1,6 +1,10 @@
 [theme]
-primaryColor = "#1F4E79"
-base = "light"
+base = "dark"
+primaryColor = "#FF9900"
+backgroundColor = "#0B1220"
+secondaryBackgroundColor = "#121B2E"
+textColor = "#E6ECF5"
+font = "sans serif"
 
 [client]
 toolbarMode = "minimal"
@@ -11,3 +15,6 @@ gatherUsageStats = false
 [server]
 headless = true
 port = 8501
+# 0.0.0.0 permite abrirlo desde otras máquinas de la red (exige AWS_PULSE_PASSWORD para accesos remotos)
+address = "0.0.0.0"
+enableXsrfProtection = true

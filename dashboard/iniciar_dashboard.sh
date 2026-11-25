@@ -6,7 +6,7 @@ cd "$(dirname "$0")" || exit 1
 
 if [ "$1" = "--demo" ]; then
   echo "MODO DEMO: datos inventados, no se conecta a AWS."
-  export PATH="$PWD/demo:$PATH" AWS_CONFIG_FILE="$PWD/demo/aws_config" AWS_PULSE_PROFILES="prod dev network security" AWS_PULSE_ORG="${AWS_PULSE_ORG:-Demo}"
+  export PATH="$PWD/demo:$PATH" AWS_CONFIG_FILE="$PWD/demo/aws_config" AWS_PULSE_PROFILES="prod dev network security" AWS_PULSE_ORG="${AWS_PULSE_ORG:-Demo}" AWS_PULSE_COST_DIR="$PWD/demo/costos"
   chmod +x demo/aws 2>/dev/null
 fi
 command -v aws >/dev/null 2>&1 || { echo "ERROR: AWS CLI no esta instalado o no esta en el PATH."; exit 1; }

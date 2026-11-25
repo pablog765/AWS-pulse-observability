@@ -107,6 +107,9 @@ Sin argumentos usan `AWS_PULSE_PROFILES` o, si no existe, todos los perfiles de 
 | **WAF y firewalls** | Acción efectiva por grupo de reglas, reglas forzadas a Count, logging, tráfico diario, reglas que más detectan, Firewall Manager |
 | **Security Hub** | Hallazgos por cuenta y severidad, explicaciones en español, enlace a la remediación y exportación a CSV |
 | **Cambios recientes** | Línea de tiempo de CloudTrail filtrable por usuario y servicio |
+| **FinOps** | Costo mensual estimado por cuenta sin Cost Explorer: inventario × precio de lista de AWS (con enlace a la fuente en cada línea), margen del reseller, descuento privado, Savings Plans / RI, soporte, créditos e IVA; matriz de servicios habilitados, cuentas de gobierno no visibles (Control Tower) y oportunidades de ahorro |
+
+![FinOps](docs/img/07-finops.png)
 
 | Salud y VPN | WAF |
 |---|---|
@@ -122,6 +125,7 @@ Sin argumentos usan `AWS_PULSE_PROFILES` o, si no existe, todos los perfiles de 
 | `aws-architecture.sh` | ¿Qué hay y cómo se conecta? | Subredes PÚBLICA / PRIVADA / AISLADA, TGW, VPN, cadena ALB → target group → instancia, RDS, WAF y tabla comparativa entre cuentas |
 | `aws-changes.sh` | ¿Qué cambió y qué está pasando? | Cambios de CloudTrail traducidos, eventos sensibles, últimos logs y consola del SO con hora local |
 | `aws-firewalls.sh` | ¿Qué protege el perímetro? | Network Firewall, reglas efectivas del WAF (fases pre/cuenta/post de FMS), Shield, DNS Firewall, políticas de Firewall Manager |
+| `aws-cost-inventory.sh` | ¿Qué estamos pagando? | Inventario facturable por cuenta (EC2, EBS, RDS, Fargate, VPN, TGW, ELB, IPv4, WAF, FMS, servicios de seguridad) en `reportes/costos/*.tsv`, que lee el módulo FinOps |
 
 Variables de `aws-changes.sh`: `DAYS` (7), `CONSOLE` (0), `LOGTOP` (8), `LOGLINES` (6), `TOPN` (25). Guía completa de comandos en [docs/COMANDOS.md](docs/COMANDOS.md) (inglés: [docs/COMMANDS.md](docs/COMMANDS.md)).
 
@@ -132,6 +136,17 @@ Variables de `aws-changes.sh`: `DAYS` (7), `CONSOLE` (0), `LOGTOP` (8), `LOGLINE
 - **Nunca subas reportes reales a un repositorio:** contienen IPs, IDs de cuenta y hallazgos de seguridad.
 - **Capturas y demo con datos ficticios:** cuentas 111111111111…, IPs de documentación (RFC 5737).
 
+## Compartir el dashboard en la red
+
+Por defecto solo lo abre el equipo anfitrión. Quien entra desde la red necesita contraseña y no ve la página de inicio de sesión SSO:
+
+```bash
+export AWS_PULSE_PASSWORD='una-frase-larga'
+./iniciar_dashboard.sh          # escucha en 0.0.0.0:8501
+```
+
+En WSL 2 además hay que activar la red en modo espejo y abrir el puerto: ver [docs/NETWORK_ACCESS.md](docs/NETWORK_ACCESS.md). Las horas se muestran en `AWS_PULSE_TZ` (por defecto `America/Guayaquil`).
+
 ## Costos
 
 Las consultas de inventario y configuración no tienen costo por llamada. Solo las métricas de CloudWatch pedidas con `GetMetricData` se cobran (del orden de USD 0,01 por cada 1.000 métricas): recorrer todo el dashboard pide unas 75 métricas. El costo se carga a la cuenta consultada.
@@ -139,7 +154,8 @@ Las consultas de inventario y configuración no tienen costo por llamada. Solo l
 ## Hoja de ruta
 
 - [ ] Histórico local (SQLite) con gráficos de tendencia: caídas de VPN, hallazgos críticos, CPU de RDS
-- [ ] Tema visual personalizable y modo oscuro
+- [x] Tema oscuro y zona horaria local
+- [x] Módulo FinOps (costo estimado por cuenta)
 - [ ] Alertas por correo o Teams cuando un indicador pasa a crítico
 - [ ] Exportar el resumen a PDF
 - [ ] Más servicios: ECS, Lambda, API Gateway, costos (Cost Explorer)

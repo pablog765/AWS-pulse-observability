@@ -1,0 +1,35 @@
+cuenta	servicio	recurso	detalle	cantidad	unidad
+444444444444	EC2	instancias detenidas	solo pagan EBS	0	instancia
+444444444444	EBS	snapshots	0 snapshots (tamaño de origen, real suele ser menor)	0	GB-mes
+444444444444	VPC	IPv4 pública en uso	ENIs con IP pública	0	IP-hora-24x7
+444444444444	VPC	Elastic IP sin asociar	desperdicio	0	IP-hora-24x7
+444444444444	VPC	NAT Gateway	hora	0	gateway-24x7
+444444444444	VPC	Interface endpoints	0 endpoints	0	endpoint-AZ-24x7
+444444444444	VPN	Site-to-Site VPN	conexión	0	conexion-24x7
+444444444444	TGW	attachments vistos	en esta cuenta (cobra al dueño del attachment)	0	attachment-24x7
+444444444444	VPN	Client VPN	endpoints	0	endpoint
+444444444444	ELB	classic	load balancer	0	lb-24x7
+444444444444	RDS	snapshots manuales	tamaño asignado	0	GB-mes
+444444444444	Lambda	funciones	costo por uso	1	funcion
+444444444444	APIGW	REST/HTTP APIs	costo por request	0	api
+444444444444	ECR	imágenes	almacenamiento	0.0	GB-mes
+444444444444	S3	buckets	1 buckets (región us-east-1)	0.0	GB-mes
+444444444444	EFS	file systems	almacenamiento	0.0	GB-mes
+444444444444	DynamoDB	tablas		0	tabla
+444444444444	CloudWatch	logs almacenados	total	0.0	GB-mes
+444444444444	CloudWatch	logs ingeridos	30 días	0.0	GB
+444444444444	CloudWatch	alarmas	estándar	0	alarma
+444444444444	CloudWatch	dashboards		0	dashboard
+444444444444	CloudTrail	trails	el 1.º de gestión es gratis	1	trail
+444444444444	Config	recorder	grabando=True	1	info
+444444444444	SecurityHub	habilitado	si	1	info
+444444444444	GuardDuty	habilitado	si	1	info
+444444444444	Inspector	estado	ENABLED	1	info
+444444444444	KMS	claves de cliente		0	clave-mes
+444444444444	SecretsManager	secretos		3	secreto-mes
+444444444444	WAF	web ACLs	regional=0 cloudfront=0	0	acl-mes
+444444444444	NetworkFirewall	firewalls	costoso si existe	0	endpoint-24x7
+444444444444	FirewallManager	políticas	solo visible en cuenta admin	1	politica-mes
+444444444444	ShieldAdvanced	suscripción	no	1	info
+444444444444	Route53	zonas hospedadas		0	zona-mes
+444444444444	Backup	recovery points		0	punto

@@ -18,6 +18,13 @@ import pandas as pd
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 UTC = dt.timezone.utc
+# Zona horaria de presentación: AWS entrega todo en UTC; aquí se convierte a la hora local del negocio.
+TZ_NAME = os.environ.get("AWS_PULSE_TZ", "America/Guayaquil")
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo(TZ_NAME)
+except Exception:  # sin tzdata: UTC-5 fijo (Ecuador no tiene horario de verano)
+    LOCAL_TZ = dt.timezone(dt.timedelta(hours=-5), "UTC-05")
 
 
 class SessionExpired(Exception):
@@ -74,13 +81,18 @@ def now() -> dt.datetime:
     return dt.datetime.now(UTC)
 
 
+def local_now() -> pd.Timestamp:
+    """Hora actual en la zona local del negocio, sin tz (misma base que to_local)."""
+    return pd.Timestamp.now(tz=LOCAL_TZ).tz_localize(None)
+
+
 def to_local(ts) -> pd.Timestamp | None:
     if ts in (None, "", "None"):
         return None
     t = pd.to_datetime(ts, utc=True, errors="coerce")
     if pd.isna(t):
         return None
-    return t.tz_convert(dt.datetime.now().astimezone().tzinfo).tz_localize(None)
+    return t.tz_convert(LOCAL_TZ).tz_localize(None)
 
 
 def tag(tags, key="Name", default="-"):
@@ -177,7 +189,7 @@ def vpn_tunnels(profile: str) -> list[dict]:
                          "vpn_id": v["VpnConnectionId"], "par_remoto": c.get("IpAddress", "-"),
                          "nombre_par": tag(c.get("Tags"), default=v.get("CustomerGatewayId", "-")),
                          "tunel_aws": ip, "estado": t.get("Status"), "desde": changed,
-                         "horas_en_estado": round((pd.Timestamp.now() - changed).total_seconds() / 3600, 1) if changed is not None else None,
+                         "horas_en_estado": round((local_now() - changed).total_seconds() / 3600, 1) if changed is not None else None,
                          "rutas": t.get("AcceptedRouteCount", 0),
                          "ruteo": "Estático" if v.get("Options", {}).get("StaticRoutesOnly") else "BGP",
                          "horas_caido_24h": down_h, "detalle": t.get("StatusMessage") or "-"})

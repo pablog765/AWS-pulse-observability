@@ -107,6 +107,9 @@ Without arguments they use `AWS_PULSE_PROFILES` or, if it is not set, every prof
 | **WAF & firewalls** | Effective action per rule group, rules forced to Count, logging, daily traffic, top-matching rules, Firewall Manager |
 | **Security Hub** | Findings by account and severity, plain-language explanations, remediation links and CSV export |
 | **Recent changes** | CloudTrail timeline filterable by user and service |
+| **FinOps** | Estimated monthly cost per account without Cost Explorer: inventory × AWS list price (source link on every line), reseller margin, private discount, Savings Plans / RI, support plan, credits and VAT; enabled-services matrix, hidden governance accounts (Control Tower) and savings opportunities |
+
+![FinOps](docs/img/07-finops.png)
 
 | Health & VPN | WAF |
 |---|---|
@@ -122,6 +125,7 @@ Without arguments they use `AWS_PULSE_PROFILES` or, if it is not set, every prof
 | `aws-architecture.sh` | What is there and how is it connected? | PUBLIC / PRIVATE / ISOLATED subnets, TGW, VPN, ALB → target group → instance chain, RDS, WAF and a cross-account comparison table |
 | `aws-changes.sh` | What changed and what is happening? | Translated CloudTrail changes, sensitive events, latest logs and OS console with local time |
 | `aws-firewalls.sh` | What protects the perimeter? | Network Firewall, effective WAF rules (FMS pre / account / post phases), Shield, DNS Firewall, Firewall Manager policies |
+| `aws-cost-inventory.sh` | What are we paying for? | Billable inventory per account (EC2, EBS, RDS, Fargate, VPN, TGW, ELB, IPv4, WAF, FMS, security services) to `reportes/costos/*.tsv`, read by the FinOps module |
 
 `aws-changes.sh` variables: `DAYS` (7), `CONSOLE` (0), `LOGTOP` (8), `LOGLINES` (6), `TOPN` (25). Full command guide in [docs/COMMANDS.md](docs/COMMANDS.md).
 
@@ -132,6 +136,17 @@ Without arguments they use `AWS_PULSE_PROFILES` or, if it is not set, every prof
 - **Never commit real reports:** they contain IPs, account IDs and security findings.
 - **Demo data and screenshots are fictitious:** accounts 111111111111…, documentation IP ranges (RFC 5737).
 
+## Sharing the dashboard on your network
+
+By default only the host machine can open it. Remote viewers need a password and never see the SSO sign-in page:
+
+```bash
+export AWS_PULSE_PASSWORD='a-long-passphrase'
+./iniciar_dashboard.sh          # listens on 0.0.0.0:8501
+```
+
+On WSL 2 also enable mirrored networking and open the port; see [docs/NETWORK_ACCESS.md](docs/NETWORK_ACCESS.md). Times are shown in `AWS_PULSE_TZ` (default `America/Guayaquil`).
+
 ## Cost
 
 Inventory and configuration calls have no per-request charge. Only CloudWatch metrics requested through `GetMetricData` are billed (about USD 0.01 per 1,000 metrics); browsing the whole dashboard requests roughly 75 metrics. The cost is charged to the account being queried.
@@ -139,7 +154,8 @@ Inventory and configuration calls have no per-request charge. Only CloudWatch me
 ## Roadmap
 
 - [ ] Local history (SQLite) with trend charts: VPN outages, critical findings, RDS CPU
-- [ ] Customizable theme and dark mode
+- [x] Dark theme and local time zone
+- [x] FinOps module (estimated cost per account)
 - [ ] Email or Teams alerts when an indicator turns critical
 - [ ] Export the summary to PDF
 - [ ] More services: ECS, Lambda, API Gateway, costs (Cost Explorer)

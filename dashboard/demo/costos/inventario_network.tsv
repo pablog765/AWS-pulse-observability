@@ -1,0 +1,37 @@
+cuenta	servicio	recurso	detalle	cantidad	unidad
+333333333333	EC2	instancias detenidas	solo pagan EBS	0	instancia
+333333333333	EBS	snapshots	0 snapshots (tamaño de origen, real suele ser menor)	0	GB-mes
+333333333333	VPC	IPv4 pública en uso	ENIs con IP pública	11	IP-hora-24x7
+333333333333	VPC	Elastic IP sin asociar	desperdicio	0	IP-hora-24x7
+333333333333	VPC	NAT Gateway	hora	1	gateway-24x7
+333333333333	VPC	NAT datos procesados	30 días	0.0	GB
+333333333333	VPC	Interface endpoints	1 endpoints	2	endpoint-AZ-24x7
+333333333333	VPN	Site-to-Site VPN	conexión	3	conexion-24x7
+333333333333	TGW	attachments vistos	en esta cuenta (cobra al dueño del attachment)	10	attachment-24x7
+333333333333	TGW	datos procesados	30 días (dueño del TGW)	0.0	GB
+333333333333	VPN	Client VPN	endpoints	0	endpoint
+333333333333	ELB	classic	load balancer	0	lb-24x7
+333333333333	RDS	snapshots manuales	tamaño asignado	0	GB-mes
+333333333333	Lambda	funciones	costo por uso	1	funcion
+333333333333	APIGW	REST/HTTP APIs	costo por request	0	api
+333333333333	ECR	imágenes	almacenamiento	0.0	GB-mes
+333333333333	S3	buckets	1 buckets (región us-east-1)	0.0	GB-mes
+333333333333	EFS	file systems	almacenamiento	0.0	GB-mes
+333333333333	DynamoDB	tablas		0	tabla
+333333333333	CloudWatch	logs almacenados	total	46.2	GB-mes
+333333333333	CloudWatch	logs ingeridos	30 días	0.0	GB
+333333333333	CloudWatch	alarmas	estándar	0	alarma
+333333333333	CloudWatch	dashboards		0	dashboard
+333333333333	CloudTrail	trails	el 1.º de gestión es gratis	1	trail
+333333333333	Config	recorder	grabando=True	1	info
+333333333333	SecurityHub	habilitado	si	1	info
+333333333333	GuardDuty	habilitado	si	1	info
+333333333333	Inspector	estado	ENABLED	1	info
+333333333333	KMS	claves de cliente		0	clave-mes
+333333333333	SecretsManager	secretos		0	secreto-mes
+333333333333	WAF	web ACLs	regional=0 cloudfront=0	0	acl-mes
+333333333333	NetworkFirewall	firewalls	costoso si existe	0	endpoint-24x7
+333333333333	FirewallManager	políticas	solo visible en cuenta admin	0	politica-mes
+333333333333	ShieldAdvanced	suscripción	no	1	info
+333333333333	Route53	zonas hospedadas		1	zona-mes
+333333333333	Backup	recovery points		0	punto

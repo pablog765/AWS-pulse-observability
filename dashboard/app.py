@@ -4,10 +4,12 @@ Ejecutar:  streamlit run app.py      (o con los lanzadores iniciar_dashboard.*)
 """
 from __future__ import annotations
 
+import hmac
 import os
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -15,11 +17,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import awsdata as A
+import finops as F
 
 ORG = os.environ.get("AWS_PULSE_ORG", "")
 st.set_page_config(page_title="AWS Pulse" + (f" · {ORG}" if ORG else ""), layout="wide")
 
-AZUL, ROJO, NARANJA, AMARILLO, VERDE, GRIS = "#1F4E79", "#C00000", "#E46C0A", "#BF8F00", "#2E7D32", "#7F7F7F"
+# Paleta "night ops": fondo azul noche, acento naranja; estados con distinta luminosidad (legibles para daltónicos)
+AZUL, ROJO, NARANJA, AMARILLO, VERDE, GRIS = "#4C9AFF", "#F87171", "#FF9900", "#FBBF24", "#4ADE80", "#8E9BB5"
 SEV_COLOR = {"CRITICAL": ROJO, "HIGH": NARANJA, "MEDIUM": AMARILLO, "LOW": VERDE}
 # Perfiles por defecto: variable AWS_PULSE_PROFILES ("prod dev network security") o los de ~/.aws/config
 DEFAULT_PROFILES = os.environ.get("AWS_PULSE_PROFILES", "").split()
@@ -27,14 +31,35 @@ TTL = 300  # segundos que se reutilizan los datos antes de volver a consultar AW
 
 st.markdown("""
 <style>
-.badge{display:inline-block;padding:2px 10px;border-radius:12px;color:#fff;font-size:0.82rem;font-weight:600;margin-right:6px}
-.card{border:1px solid rgba(128,128,128,.35);border-radius:10px;padding:12px 16px;margin-bottom:10px}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;color:#0B1220;font-size:0.82rem;font-weight:600;margin-right:6px}
+.card{border:1px solid #24314D;background:#121B2E;border-radius:10px;padding:12px 16px;margin-bottom:10px}
+[data-testid="stMetric"]{background:#121B2E}
+h1,h2,h3{font-family:"Space Grotesk",Inter,sans-serif;letter-spacing:-.3px}
 .small{font-size:0.85rem;opacity:.8}
 </style>""", unsafe_allow_html=True)
 
 
 def badge(text, color):
     return f'<span class="badge" style="background:{color}">{text}</span>'
+
+
+# ------------------------------------------------------------- acceso
+PASSWORD = os.environ.get("AWS_PULSE_PASSWORD", "")
+_ip = getattr(st.context, "ip_address", None)
+CLIENT_IP = _ip if isinstance(_ip, str) and _ip else "127.0.0.1"  # sin IP conocida = mismo equipo
+IS_LOCAL = CLIENT_IP.removeprefix("::ffff:").startswith("127.") or CLIENT_IP in ("::1", "localhost")
+if not IS_LOCAL and not PASSWORD:
+    st.error("El acceso desde la red está deshabilitado. En el equipo anfitrión define AWS_PULSE_PASSWORD y reinicia el dashboard.")
+    st.stop()
+if PASSWORD and not IS_LOCAL and not st.session_state.get("auth"):
+    st.markdown("### AWS Pulse")
+    pw = st.text_input("Contraseña", type="password")
+    if pw:
+        if hmac.compare_digest(pw, PASSWORD):
+            st.session_state["auth"] = True
+            st.rerun()
+        st.error("Contraseña incorrecta.")
+    st.stop()
 
 
 # ------------------------------------------------------------------ cache
@@ -108,13 +133,17 @@ def flat(res: dict) -> list:
 sessions, cfg_profiles = A.read_aws_config()
 with st.sidebar:
     st.markdown(f"### AWS Pulse\n<span class='small'>{ORG + ' · ' if ORG else ''}solo lectura</span>", unsafe_allow_html=True)
-    page = st.radio("Módulo", ["Sesión", "Resumen", "Salud y VPN", "Bases de datos (RDS)", "WAF y firewalls",
-                               "Security Hub", "Cambios recientes"], index=1, label_visibility="collapsed")
+    menu = ["Sesión", "Resumen", "Salud y VPN", "Bases de datos (RDS)", "WAF y firewalls",
+            "Security Hub", "Cambios recientes", "FinOps"]
+    if not IS_LOCAL:  # quien entra por la red solo consulta; el login SSO se hace en el equipo anfitrión
+        menu.remove("Sesión")
+    page = st.radio("Módulo", menu, index=menu.index("Resumen"), label_visibility="collapsed")
     st.divider()
     opts = sorted(set(cfg_profiles) | set(DEFAULT_PROFILES))
     profiles = st.multiselect("Cuentas", opts, default=[p for p in DEFAULT_PROFILES if p in opts] or opts[:4])
     sso_session = st.selectbox("Sesión SSO", sessions or ["mi-sso"], help="Nombre del bloque [sso-session] en ~/.aws/config")
     A.REGION = st.text_input("Región", A.REGION)
+    st.caption(f"Horas en {A.TZ_NAME}")
     if st.button("Actualizar datos ahora", width="stretch"):
         st.cache_data.clear()
         st.rerun()
@@ -359,7 +388,7 @@ def page_rds():
             if key not in df:
                 continue
             fig = px.area(df, y=key, labels={"index": "", key: ""}, title=title, height=220)
-            fig.update_traces(line_color=AZUL, fillcolor="rgba(31,78,121,0.15)")
+            fig.update_traces(line_color=AZUL, fillcolor="rgba(76,154,255,0.18)")
             if thr is not None:
                 fig.add_hline(y=thr, line_dash="dot", line_color=ROJO)
             fig.update_layout(margin=dict(l=0, r=0, t=36, b=0), showlegend=False, title_font_size=13)
@@ -568,7 +597,165 @@ def page_changes():
     st.download_button("Descargar CSV", d.to_csv(index=False).encode("utf-8"), "cambios.csv", "text/csv")
 
 
+# ================================================================== FINOPS
+def _cost_dirs() -> list[Path]:
+    here = Path(__file__).resolve().parent
+    cands = [os.environ.get("AWS_PULSE_COST_DIR", ""), "reportes/costos", here.parent / "reportes/costos",
+             here.parent / "scripts/reportes/costos", "~/proyectos/aws/aws-health-check/reportes/costos"]
+    return [Path(c).expanduser() for c in cands if c]
+
+
+def usd(x: float) -> str:
+    return f"${x:,.0f}"
+
+
+def page_finops():
+    st.header("FinOps: costo estimado por cuenta (USD)")
+    st.caption(f"Precio de lista público de AWS (us-east-1, on-demand, verificado {F.PRICES_DATE}) × inventario real de cada cuenta. "
+               "No reemplaza la factura: sirve para saber cuánto debería costar, dónde se va el dinero y qué se puede ahorrar.")
+
+    # ---------- origen del inventario
+    found = next((d for d in _cost_dirs() if d.is_dir() and any(d.glob("inventario_*.tsv"))), None)
+    with st.expander("Origen del inventario", expanded=found is None):
+        c1, c2 = st.columns(2)
+        folder = c1.text_input("Carpeta con inventario_*.tsv", str(found or _cost_dirs()[0]),
+                               help="La genera scripts/aws-cost-inventory.sh (solo lectura).")
+        ups = c2.file_uploader("…o súbelos aquí", type="tsv", accept_multiple_files=True)
+        st.code("ALL_REGIONS=1 ./aws-cost-inventory.sh " + " ".join(profiles), language="bash")
+    inv = F.load_uploads(ups) if ups else F.load_dir(folder)
+    if inv.empty:
+        st.info("No hay inventario todavía. Ejecuta el comando de arriba en la carpeta de scripts y vuelve a esta página.")
+        return
+    perfiles = sorted(inv["perfil"].unique())
+    mtime = max((p.stat().st_mtime for p in Path(folder).expanduser().glob("inventario_*.tsv")), default=None) if not ups else None
+    if mtime:
+        st.caption(f"Inventario del {pd.Timestamp(mtime, unit='s', tz='UTC').tz_convert(A.LOCAL_TZ):%Y-%m-%d %H:%M} (hora de {A.TZ_NAME}) · "
+                   f"cuentas: {', '.join(perfiles)}")
+
+    # ---------- variables comerciales
+    st.subheader("Variables comerciales")
+    v = st.columns(4)
+    margen = v[0].number_input("Margen del reseller / consorcio (%)", -30.0, 100.0, 0.0, 1.0,
+                               help="Positivo si el proveedor cobra encima del precio de AWS; negativo si traslada descuento.")
+    edp = v[1].number_input("Descuento privado AWS (EDP/PPA) (%)", 0.0, 40.0, 0.0, 1.0,
+                            help="Acuerdo de precio privado por compromiso de gasto. Lo negocia el reseller.")
+    creditos = v[2].number_input("Créditos promocionales (USD/mes)", 0.0, 100000.0, 0.0, 50.0,
+                                 help="Créditos MAP, POC o migración que aplique el reseller.")
+    soporte = v[3].selectbox("Plan de soporte", list(F.SUPPORT_PLANS), index=0,
+                             help="Con un reseller el soporte suele venir incluido (Partner-Led Support).")
+    v = st.columns(4)
+    sp_cov = v[0].slider("Cobertura Savings Plans (cómputo) %", 0, 100, 0, 5, help="Parte de EC2 + Fargate cubierta por un Compute Savings Plan.")
+    sp_desc = v[1].slider("Descuento del Savings Plan %", 0, 66, 27, 1, help="1 año sin pago inicial ≈ 27 %; 3 años ≈ 49 %.")
+    ri_cov = v[2].slider("Cobertura RDS Reserved %", 0, 100, 0, 5)
+    ri_desc = v[3].slider("Descuento RDS Reserved %", 0, 70, 38, 1, help="1 año sin pago inicial ≈ 35-40 %.")
+    v = st.columns(4)
+    iva_on = v[0].toggle("Incluir IVA", value=True, help="Ecuador grava los servicios digitales importados.")
+    iva = v[1].number_input("IVA (%)", 0.0, 30.0, 15.0, 1.0, disabled=not iva_on)
+    gov_n = v[2].number_input("Cuentas de gobierno no visibles", 0, 10, 3,
+                              help="Control Tower crea Management, Log Archive y Audit. No las ves, pero se pagan.")
+    gov_usd = v[3].number_input("USD/mes por cuenta de gobierno", 0.0, 500.0, 25.0, 5.0)
+
+    # ---------- supuestos de uso (editables)
+    with st.expander("Supuestos de uso que el inventario no puede medir (editables por cuenta)"):
+        base = pd.DataFrame({p: F.DEFAULT_ASSUMPTIONS for p in perfiles})
+        key = "finops_asm_" + "_".join(perfiles)
+        ed = st.data_editor(st.session_state.get(key, base), width="stretch", key=key + "_ed")
+        st.session_state[key] = ed
+        gov_gb = st.number_input("GB en el bucket de logs centralizado (Log Archive)", 0.0, 100000.0, 200.0, 50.0)
+        st.caption("Ajusta con datos reales cuando los tengas (p. ej. tráfico WAF desde la página WAF y firewalls).")
+    asm = {p: ed[p].to_dict() for p in perfiles}
+
+    k = dict(sp_cov=sp_cov, sp_desc=sp_desc, ri_cov=ri_cov, ri_desc=ri_desc, edp=edp, margen=margen,
+             soporte=soporte, creditos=creditos, iva_on=iva_on, iva=iva)
+    lines = F.price_lines(inv, asm)
+    unseen = F.unseen_lines(perfiles, asm, {"cuentas": gov_n, "usd_cuenta": gov_usd, "logs_gb": gov_gb})
+    allc = F.adjust(pd.concat([lines, unseen], ignore_index=True), k)
+    t = F.totals(allc, k)
+    ops = F.opportunities(inv, lines)
+
+    # ---------- KPIs
+    st.subheader("Resumen mensual")
+    c = st.columns(5)
+    c[0].metric("Precio de lista AWS", usd(t["lista"]), border=True)
+    c[1].metric("Con descuentos y margen", usd(t["neto"]), delta=f"{t['neto'] - t['lista']:+,.0f}" if abs(t['neto'] - t['lista']) >= 1 else None, delta_color="inverse", border=True)
+    c[2].metric("Total a pagar (est.)", usd(t["total"]), help=f"Soporte {usd(t['soporte'])} · créditos -{usd(t['creditos'])} · IVA {usd(t['iva'])}", border=True)
+    c[3].metric("Proyección anual", usd(t["total"] * 12), border=True)
+    c[4].metric("Ahorro posible / mes", usd(ops["ahorro_mes"].sum()) if not ops.empty else "-",
+                help="Suma de las oportunidades de abajo, a precio de lista. Algunas se solapan.", border=True)
+    medido = allc[allc["tipo"] == "Medido"]["costo_ajustado"].sum()
+    st.caption(f"Confianza: {medido / max(t['neto'], 1):.0%} del costo sale de recursos medidos; el resto son supuestos editables.")
+
+    by_acc = allc.groupby("perfil")[["costo_lista", "costo_ajustado"]].sum().reset_index().sort_values("costo_ajustado", ascending=False)
+    g1, g2 = st.columns([1, 1])
+    fig = go.Figure()
+    fig.add_bar(x=by_acc["perfil"], y=by_acc["costo_lista"], name="Lista AWS", marker_color=GRIS)
+    fig.add_bar(x=by_acc["perfil"], y=by_acc["costo_ajustado"], name="Ajustado", marker_color=AZUL)
+    fig.update_layout(barmode="group", height=320, margin=dict(l=0, r=0, t=36, b=0), title="Costo mensual por cuenta (USD)",
+                      title_font_size=13, legend_title_text="")
+    g1.plotly_chart(fig, width="stretch")
+    tm = allc[allc["costo_ajustado"] > 0]
+    fig2 = px.treemap(tm, path=["perfil", "servicio"], values="costo_ajustado", height=320, title="¿En qué se va el dinero?",
+                      color="categoria", color_discrete_sequence=px.colors.qualitative.Safe)
+    fig2.update_traces(texttemplate="%{label}<br>USD %{value:,.0f}")
+    fig2.update_layout(margin=dict(l=0, r=0, t=36, b=0), title_font_size=13)
+    g2.plotly_chart(fig2, width="stretch")
+
+    # ---------- matriz de servicios habilitados
+    st.subheader("Servicios habilitados por cuenta")
+    svc = allc.groupby(["servicio", "perfil"])["costo_ajustado"].sum().unstack(fill_value=0)
+    on = inv.assign(on=lambda d: (d["cantidad"] > 0) & ~d["detalle"].isin(["no", "grabando=False", "DISABLED"])) \
+            .groupby(["servicio", "perfil"])["on"].any().unstack(fill_value=False)
+    mat = pd.DataFrame(index=sorted(set(svc.index) | set(on.index)))
+    for p in [*perfiles, *[x for x in svc.columns if x not in perfiles]]:
+        en = on[p] if p in on else pd.Series(dtype=bool)
+        co = svc[p] if p in svc else pd.Series(dtype=float)
+        mat[p] = [("✔ " + (f"{co.get(s, 0):,.0f}" if co.get(s, 0) else "0")) if (en.get(s, False) or co.get(s, 0) > 0) else "—"
+                  for s in mat.index]
+    mat["Total USD/mes"] = svc.sum(axis=1).reindex(mat.index).fillna(0).round(0)
+    mat = mat.sort_values("Total USD/mes", ascending=False)
+    st.dataframe(mat.rename_axis("Servicio").reset_index(), hide_index=True, width="stretch",
+                 column_config={"Servicio": st.column_config.TextColumn(width="medium"),
+                                "Total USD/mes": st.column_config.NumberColumn(format="%.0f")})
+    st.caption("✔ = habilitado (valor = USD/mes ajustado) · — = no habilitado o sin recursos en la región.")
+
+    # ---------- detalle por cuenta
+    st.subheader("Detalle por cuenta")
+    cols = ["servicio", "recurso", "detalle", "cantidad", "precio_ref", "unidad_precio", "costo_lista", "costo_ajustado", "pct", "tipo", "nota", "fuente"]
+    cfg = {"precio_ref": st.column_config.NumberColumn("Precio de referencia (USD)", format="%.4f"),
+           "unidad_precio": "Unidad", "costo_lista": st.column_config.NumberColumn("Lista USD/mes", format="%.2f"),
+           "costo_ajustado": st.column_config.NumberColumn("Ajustado USD/mes", format="%.2f"),
+           "pct": st.column_config.ProgressColumn("% de la cuenta", format="%.1f %%", min_value=0, max_value=100),
+           "tipo": "Origen", "fuente": st.column_config.LinkColumn("Fuente del precio", display_text="aws.amazon.com")}
+    tabs = st.tabs([*by_acc["perfil"]])
+    for tab, p in zip(tabs, by_acc["perfil"]):
+        with tab:
+            d = allc[allc["perfil"] == p].copy()
+            d["pct"] = 100 * d["costo_ajustado"] / max(d["costo_ajustado"].sum(), 0.01)
+            acc = d["cuenta"].dropna().iloc[0] if "cuenta" in d and d["cuenta"].notna().any() else "-"
+            st.markdown(f"**{p}** · cuenta {acc} · lista {usd(d['costo_lista'].sum())} · ajustado **{usd(d['costo_ajustado'].sum())}**/mes")
+            st.dataframe(d.sort_values("costo_ajustado", ascending=False)[cols], hide_index=True, width="stretch", column_config=cfg)
+
+    # ---------- oportunidades
+    st.subheader("Oportunidades de ahorro")
+    if ops.empty:
+        st.success("Sin oportunidades evidentes con las reglas actuales.")
+    else:
+        st.dataframe(ops, hide_index=True, width="stretch",
+                     column_config={"ahorro_mes": st.column_config.NumberColumn("Ahorro USD/mes", format="%.0f"),
+                                    "por_que": "Por qué", "perfil": "Cuenta"})
+    st.download_button("Descargar detalle (CSV)", allc.to_csv(index=False).encode("utf-8"), "finops_detalle.csv", "text/csv")
+    with st.expander("Cómo se calcula y qué no incluye"):
+        st.markdown(f"""
+- **Medido:** recursos que el script encontró (EC2, EBS, RDS, Fargate, VPN, TGW, ALB/NLB, IPv4, WAF, FMS…) × precio de lista × {F.H} h/mes.
+- **Estimado:** uso que no se ve sin Cost Explorer (transferencia, requests, eventos de GuardDuty, ítems de Config, chequeos de Security Hub). Edita los supuestos.
+- **Cuentas de gobierno:** Control Tower no cobra, pero las cuentas Management, Log Archive y Audit pagan Config, CloudTrail, GuardDuty, Security Hub y S3.
+- **No incluye:** impuestos distintos al IVA, Marketplace, licencias BYOL, picos puntuales, capa gratuita ni redondeos del reseller.
+- **Orden de los ajustes:** lista → Savings Plans/RI (solo cómputo y RDS) → descuento privado → margen del reseller → + soporte → − créditos → + IVA.
+- Precios: [EC2]({F.SRC['ec2']}) · [RDS]({F.SRC['rds_mariadb']}) · [Fargate]({F.SRC['fargate']}) · [VPC]({F.SRC['vpc']}) · [WAF]({F.SRC['waf']}) · [Firewall Manager]({F.SRC['fms']}) · [Savings Plans]({F.SRC['sp']}) · [Soporte]({F.SRC['support']})
+""")
+
+
 PAGES = {"Sesión": page_session, "Resumen": page_summary, "Salud y VPN": page_health,
          "Bases de datos (RDS)": page_rds, "WAF y firewalls": page_waf, "Security Hub": page_sh,
-         "Cambios recientes": page_changes}
+         "Cambios recientes": page_changes, "FinOps": page_finops}
 PAGES[page]()
