@@ -71,6 +71,10 @@ if (svc, op) == ("cloudwatch", "get-metric-statistics"):
     out({"Datapoints": [{"Timestamp": iso(now - dt.timedelta(hours=h)), "Minimum": 0 if down and (h < 14 or "192.0.2.31" in dims) else 1} for h in range(24)]})
 
 if (svc, op) == ("rds", "describe-db-instances"):
+    if prof == "dev":
+        out({"DBInstances": [{"DBInstanceIdentifier": "tickets-db", "Engine": "mariadb", "EngineVersion": "10.11.8", "DBInstanceClass": "db.t3.medium",
+             "DBInstanceStatus": "available", "MultiAZ": False, "StorageEncrypted": True, "BackupRetentionPeriod": 7, "PubliclyAccessible": False,
+             "AllocatedStorage": 100, "StorageType": "gp3"}]})
     if prof != "prod": out({"DBInstances": []})
     out({"DBInstances": [
         {"DBInstanceIdentifier": "app-db-writer", "Engine": "mariadb", "EngineVersion": "10.11.8", "DBInstanceClass": "db.m6g.large",
@@ -102,10 +106,11 @@ if (svc, op) == ("cloudwatch", "get-metric-data"):
         n = min(int((now - start).total_seconds() // per), 400)
         ts = [now - dt.timedelta(seconds=per * i) for i in range(n)]
         if name == "FreeStorageSpace":  # ~3.5 % de crecimiento mensual del espacio usado, sobre 200 GB asignados
-            reader = any("reader" in d["Value"] for d in ms["Metric"]["Dimensions"])
+            dbid = " ".join(d["Value"] for d in ms["Metric"]["Dimensions"])
             t0 = dt.datetime(now.year, 4, 1, tzinfo=dt.timezone.utc)
-            used = lambda t: (96 if reader else 98) * 1.035 ** ((t - t0).days / 30.44) + random.uniform(-0.4, 0.4)
-            res.append({"Id": q["Id"], "Timestamps": [iso(t) for t in ts], "Values": [(200 - used(t)) * 1024 ** 3 for t in ts]})
+            b0, rate, alloc = (52, 1.06, 100) if "tickets" in dbid else (96 if "reader" in dbid else 98, 1.035, 200)
+            used = lambda t: b0 * rate ** ((t - t0).days / 30.44) + random.uniform(-0.4, 0.4)
+            res.append({"Id": q["Id"], "Timestamps": [iso(t) for t in ts], "Values": [(alloc - used(t)) * 1024 ** 3 for t in ts]})
             continue
         base = {"CPUUtilization": 72, "FreeableMemory": 3.1 * 1024 ** 3, "DatabaseConnections": 140, "AuroraReplicaLag": 25, "ReplicaLag": 0.4,
                 "AllowedRequests": 160000, "BlockedRequests": 0, "CountedRequests": 22000}.get(name, 50)

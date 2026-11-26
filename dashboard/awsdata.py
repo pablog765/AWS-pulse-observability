@@ -14,6 +14,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -338,8 +339,10 @@ def rds_storage_history(profile: str, db: dict, since: dt.datetime) -> pd.DataFr
     return df
 
 
-def storage_growth(df: pd.DataFrame) -> tuple[pd.DataFrame, float | None]:
-    """Uso al cierre de cada mes, crecimiento mensual y crecimiento promedio compuesto (% por mes)."""
+def storage_growth(df: pd.DataFrame, window_days: int = 90) -> tuple[pd.DataFrame, float | None]:
+    """Uso al cierre de cada mes y tendencia lineal en GB/mes (regresión sobre los últimos `window_days` días).
+    Lineal y no compuesta: el espacio de una base suele crecer por GB constantes, y un % compuesto calculado
+    desde un inicio pequeño exagera la proyección."""
     u = df["usado_gb"].dropna()
     if u.empty:
         return pd.DataFrame(), None
@@ -347,11 +350,12 @@ def storage_growth(df: pd.DataFrame) -> tuple[pd.DataFrame, float | None]:
     out = pd.DataFrame({"mes": m.index.astype(str), "usado_gb": m.values.round(1)})
     out["crecimiento_gb"] = out["usado_gb"].diff().round(1)
     out["crecimiento_pct"] = (100 * out["usado_gb"].pct_change()).round(2)
-    days = (u.index[-1] - u.index[0]).days
-    if days < 20 or u.iloc[0] <= 0:
+    w = u[u.index >= u.index[-1] - pd.Timedelta(days=window_days)]
+    if len(w) < 10:
         return out, None
-    rate = (u.iloc[-1] / u.iloc[0]) ** (30.44 / days) - 1  # tasa mensual compuesta entre el primer y el último dato
-    return out, 100 * rate
+    x = (w.index - w.index[0]).total_seconds() / 86400
+    slope = float(np.polyfit(x, w.values, 1)[0])  # GB por día
+    return out, slope * 30.44
 
 
 # ----------------------------------------------------------------------- WAF

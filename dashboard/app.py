@@ -37,6 +37,12 @@ st.markdown("""
 h1,h2,h3{font-family:"Space Grotesk",Inter,sans-serif;letter-spacing:-.3px}
 .small{font-size:0.85rem;opacity:.85}
 .vcard{border:1px solid #D5DBE5;border-left:5px solid;border-radius:10px;padding:10px 16px;margin-bottom:8px;color:#1F2937}
+.badge-lg{font-size:1.05rem;padding:5px 16px;border-radius:8px;letter-spacing:.5px}
+.dbhead{border:1px solid;border-left:6px solid;border-radius:10px;padding:10px 14px;margin:6px 0 10px;font-size:1.05rem}
+.alerta{color:#1F2937;font-size:1.2rem;font-weight:600;background:#FFFFFF;border:1px solid #D5DBE5;border-left:6px solid;
+        border-radius:10px;padding:10px 18px;margin:4px 0 10px}
+.alerta-sub{font-size:.9rem;font-weight:400;color:#6B7280;margin-top:2px}
+.acc-title{font-size:1.15rem;margin-bottom:6px}
 .brand{font-family:"Space Grotesk",Inter,sans-serif;font-size:2.3rem;font-weight:800;line-height:1.1;letter-spacing:-.5px;color:#FFFFFF}
 .brand span{color:#FF9900}
 .brand-sub{font-size:.9rem;color:#C9D3E1;margin:2px 0 6px}
@@ -380,21 +386,47 @@ def page_health():
 
 
 # ======================================================================= RDS
+HIDDEN_DB_FILE = Path(__file__).resolve().parent / ".local" / "ocultar_bd.txt"  # local, ignorado por git
+
+
+def hidden_dbs() -> set[str]:
+    env = {x.strip() for x in os.environ.get("AWS_PULSE_HIDE_DBS", "").split(",") if x.strip()}
+    try:
+        return env | {l.strip() for l in HIDDEN_DB_FILE.read_text().splitlines() if l.strip() and not l.startswith("#")}
+    except OSError:
+        return env
+
+
+def save_hidden_dbs(ids: list[str]):
+    HIDDEN_DB_FILE.parent.mkdir(exist_ok=True)
+    HIDDEN_DB_FILE.write_text("# Bases de datos que AWS Pulse no muestra en la página RDS (una por línea)\n" + "\n".join(sorted(ids)) + "\n")
+
+
 def page_rds():
     st.header("Bases de datos (RDS)")
     with st.spinner("Buscando bases de datos…"):
         rds, errs = per_account(c_rds, profiles)
     show_errors(errs)
-    dbs = flat(rds)
+    todas = flat(rds)
+    ocultas = hidden_dbs()
+    dbs = [d for d in todas if d["id"] not in ocultas]
+    with st.popover(f"Bases ocultas ({len([d for d in todas if d['id'] in ocultas])})"):
+        sel = st.multiselect("No mostrar estas bases", sorted(d["id"] for d in todas),
+                             default=sorted(d["id"] for d in todas if d["id"] in ocultas),
+                             help="Se guarda solo en este equipo (dashboard/.local/ocultar_bd.txt). FinOps las sigue contando: cuestan hasta que se eliminen.")
+        if st.button("Guardar"):
+            save_hidden_dbs(sel)
+            st.rerun()
     if not dbs:
         st.info("No se encontraron bases de datos RDS en las cuentas seleccionadas.")
         return
     hours = {"Última hora": 1, "Últimas 6 horas": 6, "Últimas 24 horas": 24, "Últimos 7 días": 168}[
         st.segmented_control("Ventana", ["Última hora", "Últimas 6 horas", "Últimas 24 horas", "Últimos 7 días"],
                              default="Últimas 24 horas") or "Últimas 24 horas"]
+    alert_box = st.container()  # se llena después de leer las métricas
     st.dataframe(pd.DataFrame(dbs).drop(columns=["aurora"]), hide_index=True, width="stretch")
-    rds_storage_section(dbs)
     st.subheader("Rendimiento por base de datos")
+    alertas = []
     st.caption("Umbrales del semáforo: CPU > 85 % crítico y > 70 % atención; retardo de réplica > 1 s atención y > 30 s crítico.")
 
     for db in dbs:
@@ -415,8 +447,17 @@ def page_rds():
             e, c = "Atención", NARANJA
         else:
             e, c = "Normal", VERDE
-        st.markdown(f"{badge(e, c)} <b>{db['id']}</b> <span class='small'>· {db['cuenta']} · {db['rol']} · "
-                    f"{db['motor']} · {db['clase']}</span>", unsafe_allow_html=True)
+        motivo = []
+        if cpu is not None and cpu > 70:
+            motivo.append(f"CPU {cpu:.0f} % (máx. {cpu_max:.0f} %)")
+        if lag is not None and lag > 1:
+            motivo.append(f"retardo de réplica {lag:.1f} s")
+        if e != "Normal":
+            alertas.append((e, db, ", ".join(motivo)))
+        st.markdown(f"<div class='dbhead' style='border-color:{c};background:{c}14'>"
+                    f"<span class='badge badge-lg' style='background:{c}'>{'⚠ ' if e != 'Normal' else ''}{e.upper()}</span> "
+                    f"<b>{db['id']}</b> <span class='small'>· {db['cuenta']} · {db['rol']} · {db['motor']} · {db['clase']}"
+                    f"{' · ' + ', '.join(motivo) if motivo else ''}</span></div>", unsafe_allow_html=True)
         if df.empty:
             st.caption("Sin datos de CloudWatch en la ventana elegida.")
             continue
@@ -444,11 +485,29 @@ def page_rds():
             fig.update_layout(margin=dict(l=0, r=0, t=36, b=0), showlegend=False, title_font_size=13)
             col.plotly_chart(fig, width="stretch", key=f"{db['cuenta']}-{db['id']}-{key}")
 
+    with alert_box:
+        for e, db, motivo in sorted(alertas, key=lambda x: x[0] != "Crítico"):
+            c = ROJO if e == "Crítico" else NARANJA
+            st.markdown(f"<div class='alerta' style='border-left-color:{c}'><span style='color:{c};font-weight:800'>⚠ {e.upper()}</span>"
+                        f" · {db['id']}"
+                        f"<div class='alerta-sub'>{db['cuenta']} · {db['rol']} · {motivo or 'revisar métricas'}</div></div>",
+                        unsafe_allow_html=True)
+        if not alertas:
+            st.markdown(f"<div class='alerta' style='border-left-color:{VERDE}'><span style='color:{VERDE};font-weight:800'>✔ NORMAL</span>"
+                        f" · todas las bases sin alertas</div>",
+                        unsafe_allow_html=True)
+    st.markdown("---")
+    rds_storage_section(dbs)
+
 
 def rds_storage_section(dbs: list[dict]):
     """Espacio usado/libre de cada base (writer y reader), crecimiento mensual desde abril y proyección."""
-    import math
     st.subheader("Almacenamiento: espacio usado, libre y crecimiento")
+    with st.expander("Ver uso del disco y evolución por cuenta", expanded=False):
+        _storage_body(dbs)
+
+
+def _storage_body(dbs: list[dict]):
     hoy = A.local_now()
     c = st.columns([1, 1, 2])
     since = c[0].date_input("Analizar desde", pd.Timestamp(hoy.year if hoy.month >= 4 else hoy.year - 1, 4, 1).date(),
@@ -465,88 +524,125 @@ def rds_storage_section(dbs: list[dict]):
         if h.empty or h["usado_gb"].dropna().empty:
             st.caption(f"{db['id']}: sin datos de almacenamiento en CloudWatch desde {since}.")
             continue
-        tbl, rate = A.storage_growth(h)
+        tbl, gb_mes = A.storage_growth(h)
         used = float(h["usado_gb"].dropna().iloc[-1])
         alloc = float(db.get("asignado_gb") or 0) if not db["aurora"] else 0.0
+        maxa = float(db.get("max_autoescala_gb") or 0)
         free = alloc - used if alloc else None
         pct = 100 * used / alloc if alloc else None
-        gb_mes = used * rate / 100 if rate else None
+        rate = 100 * gb_mes / used if gb_mes and used else None  # % mensual respecto al uso actual
 
         def meses_hasta(limite):
-            if not alloc or not rate or rate <= 0 or used >= limite:
-                return None if used < (limite or 1) else 0.0
-            return math.log(limite / used) / math.log(1 + rate / 100)
+            if not limite:
+                return None
+            if used >= limite:
+                return 0.0
+            return (limite - used) / gb_mes if gb_mes and gb_mes > 0 else None
 
-        m80, m100 = meses_hasta(0.8 * alloc) if alloc else None, meses_hasta(alloc) if alloc else None
+        m80, m100, mmax = meses_hasta(0.8 * alloc), meses_hasta(alloc), meses_hasta(maxa)
         MES = "ene feb mar abr may jun jul ago sep oct nov dic".split()
-        fecha = lambda m: "ya superado" if m == 0 else "-" if m is None else \
-            f"{m:.0f} meses ({MES[(f := hoy + pd.DateOffset(months=int(m))).month - 1]} {f.year})"
+
+        def fecha(m):
+            if m is None:
+                return "-"
+            if m == 0:
+                return "ya superado"
+            f = hoy + pd.Timedelta(days=30.44 * m)
+            plazo = "menos de 1 mes" if m < 1 else f"{m:.0f} mes" + ("es" if round(m) != 1 else "")
+            return f"{plazo} ({MES[f.month - 1]} {f.year})"
+
+        lleno = fecha(m100)
+        if maxa and m100 is not None:
+            lleno = f"{lleno} → autoescala; tope {maxa:,.0f} GB en {fecha(mmax)}"
         rows.append({"Base": db["id"], "Rol": db["rol"], "Cuenta": db["cuenta"],
                      "Asignado GB": alloc or None, "Usado GB": round(used, 1), "Libre GB": round(free, 1) if free is not None else None,
                      "% de uso": round(pct, 1) if pct is not None else None,
                      "Crecimiento mensual": round(rate, 2) if rate is not None else None, "GB por mes": round(gb_mes, 1) if gb_mes else None,
-                     "Llega al 80 %": fecha(m80), "Se llena (100 %)": fecha(m100),
+                     "Llega al 80 %": fecha(m80), "Se llena (100 %)": lleno,
                      "Autoescalado hasta": f"{db['max_autoescala_gb']} GB" if db.get("max_autoescala_gb") else ("Aurora: automático" if db["aurora"] else "No")})
         hist.append(h.assign(base=db["id"]))
-        growth[db["id"]] = (tbl, rate, used, alloc)
+        growth[db["id"]] = (tbl, gb_mes, used, alloc)
     if not rows:
         return
     t = pd.DataFrame(rows)
-    k = st.columns(len(t) if len(t) <= 4 else 4)
+    hh = pd.concat(hist)
+    for cuenta, tc in t.groupby("Cuenta", sort=False):
+        with st.container(border=True):
+            peor = tc["% de uso"].max()
+            col_e = ROJO if peor >= 85 else NARANJA if peor >= 70 else VERDE
+            st.markdown(f"<div class='acc-title'>{badge(f'{peor:.0f} % máx.' if pd.notna(peor) else 'Aurora', col_e)} "
+                        f"Cuenta <b>{cuenta}</b> <span class='small'>· {len(tc)} base(s)</span></div>", unsafe_allow_html=True)
+            storage_account(cuenta, tc.drop(columns="Cuenta"), hh[hh["base"].isin(tc["Base"])], growth, since, horizonte)
+    st.caption("Proyección lineal: GB/mes según la tendencia de los últimos 90 días; «crecimiento mensual» = esos GB sobre el uso actual. Con autoescalado, RDS amplía el disco cuando queda < 10 % libre (y se paga el nuevo tamaño). RDS: usado = asignado − FreeStorageSpace "
+               "(incluye logs binarios y temporales). Aurora: VolumeBytesUsed del clúster. El reader (réplica) tiene su propio disco "
+               "con los mismos datos que el writer. Semáforo: ≥ 70 % atención, ≥ 85 % crítico.")
+
+
+def storage_account(cuenta, t, hh, growth, since, horizonte):
+    """KPIs, uso del disco, evolución y crecimiento mes a mes de las bases de una cuenta."""
+    k = st.columns(min(len(t), 4))
     for col, (_, r) in zip(k, t.iterrows()):
         val = f"{r['% de uso']:.0f} % usado" if pd.notna(r["% de uso"]) else f"{r['Usado GB']:,.0f} GB"
         col.metric(f"{r['Base']} · {r['Rol']}", val,
-                   delta=f"+{r['Crecimiento mensual']:.1f} %/mes" if pd.notna(r["Crecimiento mensual"]) else None, delta_color="inverse",
-                   help=f"Usado {r['Usado GB']:,.1f} GB de {r['Asignado GB'] or '-'} GB · libre {r['Libre GB'] or '-'} GB", border=True)
-    st.dataframe(t, hide_index=True, width="stretch",
-                 column_config={"% de uso": st.column_config.ProgressColumn("% de uso", format="%.1f %%", min_value=0, max_value=100),
-                                "Crecimiento mensual": st.column_config.NumberColumn("Crecimiento mensual", format="%.2f %%"),
-                                "Asignado GB": st.column_config.NumberColumn(format="%.0f"),
-                                "Libre GB": st.column_config.NumberColumn(format="%.1f")})
-    g1, g2 = st.columns([2, 3])
-    bars = t[t["Asignado GB"].notna()]
-    if not bars.empty:
-        fig = go.Figure()
-        fig.add_bar(y=bars["Base"], x=bars["Usado GB"], orientation="h", name="Usado", marker_color=AZUL,
-                    text=[f"{u:,.0f} GB ({p:.0f} %)" for u, p in zip(bars["Usado GB"], bars["% de uso"])], textposition="inside")
-        fig.add_bar(y=bars["Base"], x=bars["Libre GB"], orientation="h", name="Libre", marker_color="#D5DBE5",
-                    text=[f"{f:,.0f} GB libres" for f in bars["Libre GB"]], textposition="inside", insidetextfont_color="#1F2937")
-        fig.update_layout(barmode="stack", height=120 + 60 * len(bars), title="Uso del disco por base", title_font_size=13,
-                          margin=dict(l=0, r=0, t=40, b=0), legend=dict(orientation="h", y=-0.25), xaxis_title="GB", yaxis_title="")
-        g1.plotly_chart(fig, width="stretch")
-    hh = pd.concat(hist)
-    fig2 = go.Figure()
-    pal = [AZUL, NARANJA, VERDE, "#7C3AED", ROJO]
-    for i, (name, g) in enumerate(hh.groupby("base", sort=False)):
-        col = pal[i % len(pal)]
-        g = g["usado_gb"].dropna()
-        fig2.add_scatter(x=g.index, y=g.values, mode="lines", name=f"{name} (real)", line=dict(color=col, width=2))
-        tbl, rate, used, alloc = growth[name]
-        if rate is not None:
-            fut = pd.date_range(g.index[-1], periods=horizonte + 1, freq=pd.DateOffset(months=1))
-            fig2.add_scatter(x=fut, y=[used * (1 + rate / 100) ** j for j in range(horizonte + 1)], mode="lines",
-                             name=f"{name} (proyección {rate:.1f} %/mes)", line=dict(color=col, dash="dash"))
-        if alloc:
-            fig2.add_hline(y=alloc, line_dash="dot", line_color=col, opacity=0.5,
-                           annotation_text=f"asignado {name}: {alloc:,.0f} GB", annotation_position="top left")
-    fig2.update_layout(height=360, title=f"Evolución del espacio usado desde {since:%d/%m/%Y} y proyección", title_font_size=13,
-                       margin=dict(l=0, r=0, t=40, b=0), yaxis_title="GB usados", xaxis_title="",
-                       legend=dict(orientation="h", y=-0.2))
-    g2.plotly_chart(fig2, width="stretch")
-    with st.expander("Crecimiento mes a mes"):
-        frames = []
-        for name, (tbl, rate, *_rest) in growth.items():
-            if not tbl.empty:
-                frames.append(tbl.assign(base=name))
+                   delta=f"{r['GB por mes']:+.1f} GB/mes ({r['Crecimiento mensual']:+.1f} %)" if pd.notna(r["GB por mes"]) else None,
+                   delta_color="inverse",
+                   help=f"Usado {r['Usado GB']:,.1f} GB de {r['Asignado GB'] or '-'} GB · libre {r['Libre GB'] or '-'} GB · "
+                        f"llega al 80 % en {r['Llega al 80 %']}", border=True)
+    tab1, tab2, tab3 = st.tabs(["Uso y evolución", "Detalle", "Mes a mes"])
+    with tab1:
+        g1 = g2 = st.container()
+        bars = t[t["Asignado GB"].notna()]
+        if not bars.empty:
+            fig = go.Figure()
+            fig.add_bar(y=bars["Base"], x=bars["Usado GB"], orientation="h", name="Usado", marker_color=AZUL,
+                        text=[f"{u:,.0f} GB ({p:.0f} %)" for u, p in zip(bars["Usado GB"], bars["% de uso"])], textposition="inside")
+            fig.add_bar(y=bars["Base"], x=bars["Libre GB"], orientation="h", name="Libre", marker_color="#D5DBE5",
+                        text=[f"{f:,.0f} GB libres" for f in bars["Libre GB"]], textposition="inside", insidetextfont_color="#1F2937")
+            fig.add_vline(x=0, line_width=0)
+            fig.update_layout(barmode="stack", height=150 + 60 * len(bars), title="Uso del disco", title_font_size=13,
+                              margin=dict(l=0, r=0, t=40, b=0), legend=dict(orientation="h", y=-0.3), xaxis_title="GB", yaxis_title="")
+            g1.plotly_chart(fig, width="stretch", key=f"uso-{cuenta}")
+        else:
+            g1.caption("Aurora: el almacenamiento crece solo; no hay espacio libre que medir.")
+        fig2 = go.Figure()
+        pal = [AZUL, NARANJA, VERDE, "#7C3AED", ROJO]
+        for i, (name, g) in enumerate(hh.groupby("base", sort=False)):
+            col = pal[i % len(pal)]
+            g = g["usado_gb"].dropna()
+            fig2.add_scatter(x=g.index, y=g.values, mode="lines", name=f"{name} (real)", line=dict(color=col, width=2))
+            tbl, gb_mes, used, alloc = growth[name]
+            if gb_mes is not None:
+                fut = pd.date_range(g.index[-1], periods=horizonte + 1, freq=pd.DateOffset(months=1))
+                fig2.add_scatter(x=fut, y=[used + gb_mes * j for j in range(horizonte + 1)], mode="lines",
+                                 name=f"{name} (proyección +{gb_mes:.1f} GB/mes)", line=dict(color=col, dash="dash"))
+        allocs = t["Asignado GB"].dropna().unique()
+        for al in allocs:
+            fig2.add_hline(y=al, line_dash="dot", line_color=GRIS, annotation_text=f"asignado {al:,.0f} GB", annotation_position="top left")
+            fig2.add_hline(y=0.8 * al, line_dash="dot", line_color=NARANJA, opacity=0.6,
+                           annotation_text=f"80 % ({0.8 * al:,.0f} GB)", annotation_position="bottom left")
+        fig2.update_layout(height=440, title=f"Evolución del espacio usado desde {since:%d/%m/%Y} y proyección a {horizonte} meses",
+                           title_font_size=13, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="GB usados", xaxis_title="",
+                           legend=dict(orientation="h", y=-0.2))
+        g2.plotly_chart(fig2, width="stretch", key=f"evol-{cuenta}")
+    with tab2:
+        st.dataframe(t, hide_index=True, width="stretch",
+                     column_config={"% de uso": st.column_config.ProgressColumn("% de uso", format="%.1f %%", min_value=0, max_value=100),
+                                    "Crecimiento mensual": st.column_config.NumberColumn("% mensual (sobre uso actual)", format="%.1f %%"),
+                                    "GB por mes": st.column_config.NumberColumn("GB por mes (tendencia 90 d)", format="%.1f"),
+                                    "Asignado GB": st.column_config.NumberColumn(format="%.0f"),
+                                    "Libre GB": st.column_config.NumberColumn(format="%.1f")})
+    with tab3:
+        frames = [growth[b][0].assign(base=b) for b in t["Base"] if not growth[b][0].empty]
         if frames:
             mm = pd.concat(frames)
             piv = mm.pivot(index="mes", columns="base", values=["usado_gb", "crecimiento_gb", "crecimiento_pct"])
             piv.columns = [f"{b} · {dict(usado_gb='GB usados', crecimiento_gb='GB +/−', crecimiento_pct='% vs mes anterior')[m]}"
                            for m, b in piv.columns]
             st.dataframe(piv.sort_index(axis=1, key=lambda c: c.str.split(" · ").str[0]), width="stretch")
-        st.caption("Crecimiento mensual = tasa compuesta entre el primer y el último día con datos. RDS: usado = asignado − FreeStorageSpace "
-                   "(incluye logs binarios y temporales). Aurora: VolumeBytesUsed del clúster. El reader (réplica) tiene su propio disco "
-                   "con los mismos datos que el writer.")
+            fig3 = px.bar(mm, x="mes", y="crecimiento_gb", color="base", barmode="group", height=260,
+                          title="GB agregados cada mes", color_discrete_sequence=[AZUL, NARANJA, VERDE])
+            fig3.update_layout(margin=dict(l=0, r=0, t=40, b=0), title_font_size=13, legend_title_text="", xaxis_title="", yaxis_title="GB")
+            st.plotly_chart(fig3, width="stretch", key=f"mes-{cuenta}")
 
 
 # =================================================================== WAF

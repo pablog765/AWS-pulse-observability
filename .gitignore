@@ -15,3 +15,6 @@ boot-times.txt
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Configuración local (nombres reales): no subir
+dashboard/.local/
