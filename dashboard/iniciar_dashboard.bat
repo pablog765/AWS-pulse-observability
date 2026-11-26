@@ -4,7 +4,7 @@ REM ------------------------------------------------------------------
 REM  Levanta WSL, inicia el Dashboard AWS y abre el navegador.
 REM  Si tu carpeta es otra, cambia la ruta de la siguiente linea.
 REM ------------------------------------------------------------------
-set CARPETA=~/proyectos/aws/aws-dashboard
+set CARPETA=~/proyectos/aws/aws-pulse/dashboard
 
 echo Verificando la carpeta %CARPETA% en WSL...
 wsl.exe -- bash -lc "test -x %CARPETA%/iniciar_dashboard.sh"
