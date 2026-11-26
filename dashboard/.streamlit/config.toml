@@ -14,6 +14,7 @@ gatherUsageStats = false
 
 [server]
 headless = true
+runOnSave = true
 port = 8501
 # 0.0.0.0 permite abrirlo desde otras máquinas de la red (exige AWS_PULSE_PASSWORD para accesos remotos)
 address = "0.0.0.0"
