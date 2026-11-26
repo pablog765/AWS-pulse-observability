@@ -22,8 +22,8 @@ import finops as F
 ORG = os.environ.get("AWS_PULSE_ORG", "")
 st.set_page_config(page_title="AWS Pulse" + (f" · {ORG}" if ORG else ""), layout="wide")
 
-# Paleta "night ops": fondo azul noche, acento naranja; estados con distinta luminosidad (legibles para daltónicos)
-AZUL, ROJO, NARANJA, AMARILLO, VERDE, GRIS = "#4C9AFF", "#F87171", "#FF9900", "#FBBF24", "#4ADE80", "#8E9BB5"
+# Paleta "claro corporativo": fondo claro tipo consola AWS; estados en tonos oscuros para buen contraste sobre blanco
+AZUL, ROJO, NARANJA, AMARILLO, VERDE, GRIS = "#2563EB", "#DC2626", "#EC7211", "#CA8A04", "#16A34A", "#6B7280"
 SEV_COLOR = {"CRITICAL": ROJO, "HIGH": NARANJA, "MEDIUM": AMARILLO, "LOW": VERDE}
 # Perfiles por defecto: variable AWS_PULSE_PROFILES ("prod dev network security") o los de ~/.aws/config
 DEFAULT_PROFILES = os.environ.get("AWS_PULSE_PROFILES", "").split()
@@ -31,11 +31,16 @@ TTL = 300  # segundos que se reutilizan los datos antes de volver a consultar AW
 
 st.markdown("""
 <style>
-.badge{display:inline-block;padding:2px 10px;border-radius:12px;color:#0B1220;font-size:0.82rem;font-weight:600;margin-right:6px}
-.card{border:1px solid #24314D;background:#121B2E;border-radius:10px;padding:12px 16px;margin-bottom:10px}
-[data-testid="stMetric"]{background:#121B2E}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;color:#FFFFFF;font-size:0.82rem;font-weight:600;margin-right:6px}
+.card{border:1px solid #D5DBE5;background:#FFFFFF;border-radius:10px;padding:12px 16px;margin-bottom:10px}
+[data-testid="stMetric"]{background:#FFFFFF}
 h1,h2,h3{font-family:"Space Grotesk",Inter,sans-serif;letter-spacing:-.3px}
-.small{font-size:0.85rem;opacity:.8}
+.small{font-size:0.85rem;opacity:.85}
+.vcard{border:1px solid #D5DBE5;border-left:5px solid;border-radius:10px;padding:10px 16px;margin-bottom:8px;color:#1F2937}
+.brand{font-family:"Space Grotesk",Inter,sans-serif;font-size:2.3rem;font-weight:800;line-height:1.1;letter-spacing:-.5px;color:#FFFFFF}
+.brand span{color:#FF9900}
+.brand-sub{font-size:.9rem;color:#C9D3E1;margin:2px 0 6px}
+[data-testid="stMain"] h1,[data-testid="stMain"] h2,[data-testid="stMain"] h3{text-align:center}
 </style>""", unsafe_allow_html=True)
 
 
@@ -78,6 +83,8 @@ def c_rds(p): return A.rds_instances(p)
 @st.cache_data(ttl=TTL, show_spinner=False)
 def c_rds_metrics(p, db_id, db, hours): return A.rds_metrics(p, db, hours)
 @st.cache_data(ttl=3600, show_spinner=False)
+def c_rds_storage(p, db_id, db, since_iso): return A.rds_storage_history(p, db, pd.Timestamp(since_iso).to_pydatetime())
+@st.cache_data(ttl=TTL, show_spinner=False)
 def c_mem(p, cls): return A.instance_memory_gb(p, cls)
 @st.cache_data(ttl=TTL, show_spinner=False)
 def c_waf(p): return A.waf_acls(p)
@@ -132,7 +139,8 @@ def flat(res: dict) -> list:
 # ------------------------------------------------------------------ sidebar
 sessions, cfg_profiles = A.read_aws_config()
 with st.sidebar:
-    st.markdown(f"### AWS Pulse\n<span class='small'>{ORG + ' · ' if ORG else ''}solo lectura</span>", unsafe_allow_html=True)
+    st.markdown(f"<div class='brand'>AWS <span>Pulse</span></div>"
+                f"<div class='brand-sub'>{ORG + ' · ' if ORG else ''}solo lectura</div>", unsafe_allow_html=True)
     menu = ["Sesión", "Resumen", "Salud y VPN", "Bases de datos (RDS)", "WAF y firewalls",
             "Security Hub", "Cambios recientes", "FinOps"]
     if not IS_LOCAL:  # quien entra por la red solo consulta; el login SSO se hace en el equipo anfitrión
@@ -275,6 +283,61 @@ def page_summary():
 
 
 # ============================================================ SALUD Y VPN
+def vpn_card(name, g, estado, color):
+    mb = g["trafico_24h_mb"].sum(min_count=1) if "trafico_24h_mb" in g else None
+    traf = "tráfico 24 h: s/d" if mb is None or pd.isna(mb) else f"tráfico 24 h: {mb:,.0f} MB" if mb >= 1 else "sin tráfico en 24 h"
+    up = (g["estado"] == "UP").sum()
+    return (f"<div class='vcard' style='border-left-color:{color};background:{color}1F'>{badge(estado, color)} <b>{name}</b>"
+            f"<span class='small'> · {up}/{len(g)} túneles arriba · {traf} · par remoto {g['par_remoto'].iloc[0]} "
+            f"({g['nombre_par'].iloc[0]}) · {g['ruteo'].iloc[0]}</span></div>")
+
+
+def vpn_section(v: pd.DataFrame):
+    """Separa las VPN en uso de las que no tienen tráfico (o llevan más de un día caídas) y oculta estas últimas."""
+    if "trafico_24h_mb" not in v:
+        v["trafico_24h_mb"] = None
+    info = []
+    for name, g in v.groupby("vpn", sort=False):
+        mb = g["trafico_24h_mb"].sum(min_count=1)
+        n_up = (g["estado"] == "UP").sum()
+        dias_caida = (g["estado"] != "UP").all() and (g["horas_en_estado"].fillna(0) >= 24).all()
+        sin_uso = (not pd.isna(mb) and mb < 1) or (pd.isna(mb) and dias_caida)
+        info.append({"vpn": name, "sin_uso": sin_uso, "n_up": n_up, "n": len(g)})
+    info = pd.DataFrame(info)
+    usadas, libres = info[~info["sin_uso"]], info[info["sin_uso"]]
+    c = st.columns(4)
+    c[0].metric("VPN totales", len(info), border=True)
+    c[1].metric("En uso", len(usadas), border=True)
+    c[2].metric("Sin uso", len(libres), border=True, help="Sin tráfico en 24 h, o con todos los túneles caídos hace más de un día.")
+    c[3].metric("Costo de las VPN sin uso", f"${len(libres) * F.P['vpn_h'] * F.H:,.0f}/mes", border=True,
+                help=f"USD {F.P['vpn_h']}/h por conexión × {F.H} h (precio de lista).")
+    for _, r in usadas.iterrows():
+        g = v[v["vpn"] == r["vpn"]]
+        e, col = ("Redundancia completa", VERDE) if r["n_up"] == r["n"] else ("Sin redundancia", NARANJA) if r["n_up"] else ("CAÍDA", ROJO)
+        st.markdown(vpn_card(r["vpn"], g, e, col), unsafe_allow_html=True)
+    if not libres.empty:
+        with st.expander(f"VPN sin uso ({len(libres)}): ocultas. Candidatas a revisar o eliminar"):
+            for _, r in libres.iterrows():
+                st.markdown(vpn_card(r["vpn"], v[v["vpn"] == r["vpn"]], "SIN USO", GRIS), unsafe_allow_html=True)
+            st.caption("Antes de eliminar, confirma con el dueño del enlace (puede ser un respaldo que solo se activa en contingencia).")
+    ver_todas = st.toggle("Incluir las VPN sin uso en la tabla y el gráfico", value=False) if not libres.empty else True
+    vv = v if ver_todas else v[v["vpn"].isin(usadas["vpn"])]
+    if vv.empty:
+        return
+    st.dataframe(vv[["vpn", "tunel_aws", "estado", "desde", "horas_en_estado", "rutas", "trafico_24h_mb", "horas_caido_24h", "detalle"]],
+                 hide_index=True, width="stretch",
+                 column_config={"vpn": "VPN", "tunel_aws": "Túnel AWS", "estado": "Estado",
+                                "desde": st.column_config.DatetimeColumn("Desde (hora local)", format="YYYY-MM-DD HH:mm"),
+                                "horas_en_estado": "Horas en ese estado", "rutas": "Rutas",
+                                "trafico_24h_mb": st.column_config.NumberColumn("Tráfico 24 h (MB)", format="%.1f"),
+                                "horas_caido_24h": "Horas caído (24 h)", "detalle": "Detalle"})
+    fig = px.bar(vv, x="horas_caido_24h", y=vv["vpn"] + " · " + vv["tunel_aws"], orientation="h",
+                 color="estado", color_discrete_map={"UP": VERDE, "DOWN": ROJO},
+                 labels={"horas_caido_24h": "Horas con caída en las últimas 24 h", "y": ""}, height=80 + 40 * len(vv))
+    fig.update_layout(margin=dict(l=0, r=10, t=10, b=0), legend_title_text="Estado")
+    st.plotly_chart(fig, width="stretch")
+
+
 def page_health():
     st.header("Salud de servidores y enlaces VPN")
     with st.spinner("Consultando EC2, alarmas y VPN…"):
@@ -289,22 +352,7 @@ def page_health():
     if v.empty:
         st.info("No hay VPN en las cuentas seleccionadas (las VPN suelen estar en la cuenta de red).")
     else:
-        for name, g in v.groupby("vpn", sort=False):
-            n_up = (g["estado"] == "UP").sum()
-            e, c = ("OK: redundancia completa", VERDE) if n_up == len(g) else ("Sin redundancia", NARANJA) if n_up else ("CAÍDA", ROJO)
-            st.markdown(f"<div class='card'>{badge(e, c)} <b>{name}</b> <span class='small'>· par remoto "
-                        f"{g['par_remoto'].iloc[0]} ({g['nombre_par'].iloc[0]}) · {g['ruteo'].iloc[0]}</span></div>",
-                        unsafe_allow_html=True)
-        st.dataframe(v[["vpn", "tunel_aws", "estado", "desde", "horas_en_estado", "rutas", "horas_caido_24h", "detalle"]],
-                     hide_index=True, width="stretch",
-                     column_config={"desde": st.column_config.DatetimeColumn("Desde (hora local)", format="YYYY-MM-DD HH:mm"),
-                                    "horas_en_estado": "Horas en ese estado", "horas_caido_24h": "Horas caído (24 h)",
-                                    "tunel_aws": "Túnel AWS"})
-        fig = px.bar(v, x="horas_caido_24h", y=v["vpn"] + " · " + v["tunel_aws"], orientation="h",
-                     color="estado", color_discrete_map={"UP": VERDE, "DOWN": ROJO},
-                     labels={"horas_caido_24h": "Horas con caída en las últimas 24 h", "y": ""}, height=60 + 40 * len(v))
-        fig.update_layout(margin=dict(l=0, r=10, t=10, b=0), legend_title_text="Estado")
-        st.plotly_chart(fig, width="stretch")
+        vpn_section(v)
 
     st.subheader("Alarmas activas")
     a = pd.DataFrame(flat(al))
@@ -345,6 +393,8 @@ def page_rds():
         st.segmented_control("Ventana", ["Última hora", "Últimas 6 horas", "Últimas 24 horas", "Últimos 7 días"],
                              default="Últimas 24 horas") or "Últimas 24 horas"]
     st.dataframe(pd.DataFrame(dbs).drop(columns=["aurora"]), hide_index=True, width="stretch")
+    rds_storage_section(dbs)
+    st.subheader("Rendimiento por base de datos")
     st.caption("Umbrales del semáforo: CPU > 85 % crítico y > 70 % atención; retardo de réplica > 1 s atención y > 30 s crítico.")
 
     for db in dbs:
@@ -388,11 +438,115 @@ def page_rds():
             if key not in df:
                 continue
             fig = px.area(df, y=key, labels={"index": "", key: ""}, title=title, height=220)
-            fig.update_traces(line_color=AZUL, fillcolor="rgba(76,154,255,0.18)")
+            fig.update_traces(line_color=AZUL, fillcolor="rgba(37,99,235,0.15)")
             if thr is not None:
                 fig.add_hline(y=thr, line_dash="dot", line_color=ROJO)
             fig.update_layout(margin=dict(l=0, r=0, t=36, b=0), showlegend=False, title_font_size=13)
             col.plotly_chart(fig, width="stretch", key=f"{db['cuenta']}-{db['id']}-{key}")
+
+
+def rds_storage_section(dbs: list[dict]):
+    """Espacio usado/libre de cada base (writer y reader), crecimiento mensual desde abril y proyección."""
+    import math
+    st.subheader("Almacenamiento: espacio usado, libre y crecimiento")
+    hoy = A.local_now()
+    c = st.columns([1, 1, 2])
+    since = c[0].date_input("Analizar desde", pd.Timestamp(hoy.year if hoy.month >= 4 else hoy.year - 1, 4, 1).date(),
+                            help="Por defecto el 1 de abril. CloudWatch guarda datos diarios hasta 15 meses.")
+    horizonte = c[1].selectbox("Proyectar", [3, 6, 12], index=1, format_func=lambda m: f"{m} meses")
+    since_ts = pd.Timestamp(since, tz=A.LOCAL_TZ)
+    rows, hist, growth = [], [], {}
+    for db in dbs:
+        try:
+            h = c_rds_storage(db["cuenta"], db["id"], db, since_ts.isoformat())
+        except (A.AwsError, A.SessionExpired) as e:
+            st.caption(f"{db['id']}: {e}")
+            continue
+        if h.empty or h["usado_gb"].dropna().empty:
+            st.caption(f"{db['id']}: sin datos de almacenamiento en CloudWatch desde {since}.")
+            continue
+        tbl, rate = A.storage_growth(h)
+        used = float(h["usado_gb"].dropna().iloc[-1])
+        alloc = float(db.get("asignado_gb") or 0) if not db["aurora"] else 0.0
+        free = alloc - used if alloc else None
+        pct = 100 * used / alloc if alloc else None
+        gb_mes = used * rate / 100 if rate else None
+
+        def meses_hasta(limite):
+            if not alloc or not rate or rate <= 0 or used >= limite:
+                return None if used < (limite or 1) else 0.0
+            return math.log(limite / used) / math.log(1 + rate / 100)
+
+        m80, m100 = meses_hasta(0.8 * alloc) if alloc else None, meses_hasta(alloc) if alloc else None
+        MES = "ene feb mar abr may jun jul ago sep oct nov dic".split()
+        fecha = lambda m: "ya superado" if m == 0 else "-" if m is None else \
+            f"{m:.0f} meses ({MES[(f := hoy + pd.DateOffset(months=int(m))).month - 1]} {f.year})"
+        rows.append({"Base": db["id"], "Rol": db["rol"], "Cuenta": db["cuenta"],
+                     "Asignado GB": alloc or None, "Usado GB": round(used, 1), "Libre GB": round(free, 1) if free is not None else None,
+                     "% de uso": round(pct, 1) if pct is not None else None,
+                     "Crecimiento mensual": round(rate, 2) if rate is not None else None, "GB por mes": round(gb_mes, 1) if gb_mes else None,
+                     "Llega al 80 %": fecha(m80), "Se llena (100 %)": fecha(m100),
+                     "Autoescalado hasta": f"{db['max_autoescala_gb']} GB" if db.get("max_autoescala_gb") else ("Aurora: automático" if db["aurora"] else "No")})
+        hist.append(h.assign(base=db["id"]))
+        growth[db["id"]] = (tbl, rate, used, alloc)
+    if not rows:
+        return
+    t = pd.DataFrame(rows)
+    k = st.columns(len(t) if len(t) <= 4 else 4)
+    for col, (_, r) in zip(k, t.iterrows()):
+        val = f"{r['% de uso']:.0f} % usado" if pd.notna(r["% de uso"]) else f"{r['Usado GB']:,.0f} GB"
+        col.metric(f"{r['Base']} · {r['Rol']}", val,
+                   delta=f"+{r['Crecimiento mensual']:.1f} %/mes" if pd.notna(r["Crecimiento mensual"]) else None, delta_color="inverse",
+                   help=f"Usado {r['Usado GB']:,.1f} GB de {r['Asignado GB'] or '-'} GB · libre {r['Libre GB'] or '-'} GB", border=True)
+    st.dataframe(t, hide_index=True, width="stretch",
+                 column_config={"% de uso": st.column_config.ProgressColumn("% de uso", format="%.1f %%", min_value=0, max_value=100),
+                                "Crecimiento mensual": st.column_config.NumberColumn("Crecimiento mensual", format="%.2f %%"),
+                                "Asignado GB": st.column_config.NumberColumn(format="%.0f"),
+                                "Libre GB": st.column_config.NumberColumn(format="%.1f")})
+    g1, g2 = st.columns([2, 3])
+    bars = t[t["Asignado GB"].notna()]
+    if not bars.empty:
+        fig = go.Figure()
+        fig.add_bar(y=bars["Base"], x=bars["Usado GB"], orientation="h", name="Usado", marker_color=AZUL,
+                    text=[f"{u:,.0f} GB ({p:.0f} %)" for u, p in zip(bars["Usado GB"], bars["% de uso"])], textposition="inside")
+        fig.add_bar(y=bars["Base"], x=bars["Libre GB"], orientation="h", name="Libre", marker_color="#D5DBE5",
+                    text=[f"{f:,.0f} GB libres" for f in bars["Libre GB"]], textposition="inside", insidetextfont_color="#1F2937")
+        fig.update_layout(barmode="stack", height=120 + 60 * len(bars), title="Uso del disco por base", title_font_size=13,
+                          margin=dict(l=0, r=0, t=40, b=0), legend=dict(orientation="h", y=-0.25), xaxis_title="GB", yaxis_title="")
+        g1.plotly_chart(fig, width="stretch")
+    hh = pd.concat(hist)
+    fig2 = go.Figure()
+    pal = [AZUL, NARANJA, VERDE, "#7C3AED", ROJO]
+    for i, (name, g) in enumerate(hh.groupby("base", sort=False)):
+        col = pal[i % len(pal)]
+        g = g["usado_gb"].dropna()
+        fig2.add_scatter(x=g.index, y=g.values, mode="lines", name=f"{name} (real)", line=dict(color=col, width=2))
+        tbl, rate, used, alloc = growth[name]
+        if rate is not None:
+            fut = pd.date_range(g.index[-1], periods=horizonte + 1, freq=pd.DateOffset(months=1))
+            fig2.add_scatter(x=fut, y=[used * (1 + rate / 100) ** j for j in range(horizonte + 1)], mode="lines",
+                             name=f"{name} (proyección {rate:.1f} %/mes)", line=dict(color=col, dash="dash"))
+        if alloc:
+            fig2.add_hline(y=alloc, line_dash="dot", line_color=col, opacity=0.5,
+                           annotation_text=f"asignado {name}: {alloc:,.0f} GB", annotation_position="top left")
+    fig2.update_layout(height=360, title=f"Evolución del espacio usado desde {since:%d/%m/%Y} y proyección", title_font_size=13,
+                       margin=dict(l=0, r=0, t=40, b=0), yaxis_title="GB usados", xaxis_title="",
+                       legend=dict(orientation="h", y=-0.2))
+    g2.plotly_chart(fig2, width="stretch")
+    with st.expander("Crecimiento mes a mes"):
+        frames = []
+        for name, (tbl, rate, *_rest) in growth.items():
+            if not tbl.empty:
+                frames.append(tbl.assign(base=name))
+        if frames:
+            mm = pd.concat(frames)
+            piv = mm.pivot(index="mes", columns="base", values=["usado_gb", "crecimiento_gb", "crecimiento_pct"])
+            piv.columns = [f"{b} · {dict(usado_gb='GB usados', crecimiento_gb='GB +/−', crecimiento_pct='% vs mes anterior')[m]}"
+                           for m, b in piv.columns]
+            st.dataframe(piv.sort_index(axis=1, key=lambda c: c.str.split(" · ").str[0]), width="stretch")
+        st.caption("Crecimiento mensual = tasa compuesta entre el primer y el último día con datos. RDS: usado = asignado − FreeStorageSpace "
+                   "(incluye logs binarios y temporales). Aurora: VolumeBytesUsed del clúster. El reader (réplica) tiene su propio disco "
+                   "con los mismos datos que el writer.")
 
 
 # =================================================================== WAF
@@ -461,7 +615,37 @@ def page_waf():
             st.plotly_chart(fig, width="stretch", key=f"r-{p}")
 
     st.markdown("---")
-    st.subheader("Firewall Manager")
+    fms_section()
+
+
+WAF_GROUPS = {  # qué protege cada grupo administrado de AWS y con qué marco de referencia se relaciona
+    "AWSManagedRulesCommonRuleSet": ("Ataques web comunes: XSS, inclusión de archivos (LFI/RFI), cuerpos y URLs anómalos",
+                                     "OWASP Top 10: A03 Inyección, A05 Configuración insegura"),
+    "AWSManagedRulesKnownBadInputsRuleSet": ("Entradas maliciosas conocidas: Log4j/Log4Shell, deserialización Java, rutas de explotación",
+                                             "OWASP Top 10: A06 Componentes vulnerables, A08 Integridad"),
+    "AWSManagedRulesSQLiRuleSet": ("Inyección SQL en parámetros, cuerpo, cookies y encabezados", "OWASP Top 10: A03 Inyección"),
+    "AWSManagedRulesAmazonIpReputationList": ("IPs con mala reputación según inteligencia de amenazas de Amazon (bots, escaneo)",
+                                              "NIST 800-53 SI-4 (monitoreo) · inteligencia de amenazas"),
+    "AWSManagedRulesAnonymousIpList": ("Tráfico desde VPN anónimas, Tor y hosting", "NIST 800-53 SC-7"),
+    "AWSManagedRulesBotControlRuleSet": ("Bots automatizados y scrapers", "OWASP Automated Threats"),
+    "AWSManagedRulesLinuxRuleSet": ("Ataques específicos de Linux (LFI)", "OWASP Top 10: A03"),
+    "AWSManagedRulesWindowsRuleSet": ("Ataques específicos de Windows (PowerShell)", "OWASP Top 10: A03"),
+    "AWSManagedRulesPHPRuleSet": ("Ataques específicos de PHP", "OWASP Top 10: A03"),
+    "AWSManagedRulesAdminProtectionRuleSet": ("Acceso externo a páginas de administración", "OWASP Top 10: A01 Control de acceso"),
+}
+FMS_TYPES = {"WAFV2": "AWS WAF (firewall web)", "SHIELD_ADVANCED": "Shield Advanced (DDoS)", "SECURITY_GROUPS_COMMON": "Security Groups comunes",
+             "SECURITY_GROUPS_CONTENT_AUDIT": "Auditoría de Security Groups", "NETWORK_FIREWALL": "Network Firewall", "DNS_FIREWALL": "DNS Firewall"}
+RES_TYPES = {"AWS::ElasticLoadBalancingV2::LoadBalancer": "balanceadores ALB", "AWS::CloudFront::Distribution": "distribuciones CloudFront",
+             "AWS::ApiGateway::Stage": "APIs de API Gateway", "AWS::EC2::VPC": "VPC", "AWS::EC2::SecurityGroup": "Security Groups"}
+
+
+@st.cache_data(ttl=TTL, show_spinner=False)
+def c_names(ps: tuple) -> dict:
+    return A.account_names(list(ps))
+
+
+def fms_section():
+    st.subheader("Firewall Manager: cumplimiento de políticas de seguridad")
     admin, pols = None, []
     for prof in profiles:  # las políticas solo se ven desde la cuenta administradora de FMS
         try:
@@ -473,15 +657,65 @@ def page_waf():
     if not admin:
         st.info("Firewall Manager no está configurado.")
         return
-    st.write(f"Cuenta administradora: **{admin}**")
+    names = c_names(tuple(profiles))
+    nm = lambda acc: names.get(acc, "Cuenta fuera de tus perfiles")
+    st.markdown(f"Cuenta administradora de FMS: **{nm(admin)}** <span class='small'>({admin})</span>", unsafe_allow_html=True)
+    with st.expander("¿Qué significa «Cumple» (COMPLIANT) en Firewall Manager?", expanded=False):
+        st.markdown("""
+**El marco de referencia es la propia política de FMS**, definida por tu organización. *Cumple* significa que **todos los recursos
+de esa cuenta que entran en el alcance de la política** (p. ej. los ALB con la etiqueta indicada) **tienen aplicada la protección
+que la política exige** (p. ej. el web ACL con sus grupos de reglas). *No cumple* = al menos un recurso no la tiene; la columna
+*Recursos sin protección* dice cuántos.
+
+**Lo que «Cumple» NO garantiza:** que las reglas bloqueen. Si un grupo tiene reglas en modo *conteo* (Count), el recurso cumple
+la política pero esos ataques solo se registran. Revisa la columna *Acción* de la tabla de reglas.
+
+**Relación con marcos externos:** las reglas administradas de AWS cubren riesgos de **OWASP Top 10**; tener un WAF delante de
+aplicaciones públicas responde a **PCI DSS v4.0 req. 6.4.2** y **NIST 800-53 SC-7** (protección de frontera). Security Hub
+(estándar AWS Foundational Security Best Practices) evalúa además **WAF.10** (el ACL tiene reglas) y **WAF.11** (logging activo).
+""")
     if not pols:
         st.caption("Las políticas solo se ven desde la cuenta administradora: inclúyela en las cuentas seleccionadas.")
     for pol in pols:
-        st.markdown(f"<div class='card'><b>{pol['politica']}</b> · {pol['tipo']} sobre {pol['aplica_a']}<br>"
-                    f"Auto-remediación: {pol['auto_remedia']} · Alcance: {pol['alcance']} · Solo recursos con: {pol['solo_tags']} · "
-                    f"Logging: {badge(pol['logging'], VERDE if pol['logging'] == 'Sí' else ROJO)}</div>", unsafe_allow_html=True)
-        if pol["cumplimiento"]:
-            st.dataframe(pd.DataFrame(pol["cumplimiento"]), hide_index=True, width="stretch")
+        alcance = pol["alcance"]
+        if alcance != "Toda la organización":
+            alcance = ", ".join(nm(x.strip()) for x in alcance.split(","))
+        tipo = FMS_TYPES.get(pol["tipo"], pol["tipo"])
+        recursos = RES_TYPES.get(pol["aplica_a"], pol["aplica_a"])
+        etiqueta = f" con la etiqueta <b>{pol['solo_tags']}</b>" if pol["solo_tags"] != "-" else ""
+        comp = pd.DataFrame(pol["cumplimiento"])
+        n_ok = (comp["estado"] == "COMPLIANT").sum() if not comp.empty else 0
+        estado = badge(f"{n_ok}/{len(comp)} cuentas cumplen", VERDE if n_ok == len(comp) else NARANJA)
+        st.markdown(
+            f"<div class='card'>{estado} <b>Política «{pol['politica']}»</b> · {tipo}<br>"
+            f"<b>Qué exige:</b> que todos los {recursos}{etiqueta} de <b>{alcance}</b> tengan asociado el web ACL de la política "
+            f"(acción por defecto: {pol.get('accion_defecto', '-')}).<br>"
+            f"<b>Auto-remediación:</b> {'Sí: FMS lo corrige solo' if pol['auto_remedia'] == 'Sí' else 'No: solo reporta'} · "
+            f"<b>Cuentas excluidas:</b> {pol.get('excluye', '-')} · "
+            f"<b>Logging:</b> {badge(pol['logging'], VERDE if pol['logging'] == 'Sí' else ROJO)}</div>", unsafe_allow_html=True)
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.markdown("**Cumplimiento por cuenta**")
+            if comp.empty:
+                st.caption("Sin datos de cumplimiento.")
+            else:
+                t = pd.DataFrame({"Cuenta": comp["cuenta"].map(nm), "ID": comp["cuenta"],
+                                  "Estado": comp["estado"].map({"COMPLIANT": "✅ Cumple", "NON_COMPLIANT": "❌ No cumple"}).fillna(comp["estado"]),
+                                  "Recursos sin protección": comp["violaciones"].fillna(0).astype(int)})
+                st.dataframe(t.sort_values("Estado"), hide_index=True, width="stretch")
+        with c2:
+            st.markdown("**Reglas que exige la política**")
+            g = pd.DataFrame(pol.get("grupos") or [])
+            if g.empty:
+                st.caption("La política no declara grupos de reglas administrados.")
+            else:
+                g["Qué protege"] = g["grupo"].map(lambda x: WAF_GROUPS.get(x, ("-", "-"))[0])
+                g["Marco de referencia"] = g["grupo"].map(lambda x: WAF_GROUPS.get(x, ("-", "-"))[1])
+                g["grupo"] = g["grupo"].str.replace("AWSManagedRules", "", regex=False)
+                st.dataframe(g.rename(columns={"grupo": "Grupo", "fase": "Orden", "accion": "Acción"})[
+                                 ["Grupo", "Qué protege", "Marco de referencia", "Acción"]], hide_index=True, width="stretch")
+        if not comp.empty and pol.get("grupos") and any("conteo" in x["accion"] or "no bloquea" in x["accion"] for x in pol["grupos"]):
+            st.warning("Las cuentas aparecen como «Cumple», pero hay reglas en modo conteo: esos ataques se registran y no se bloquean.")
 
 
 # =========================================================== SECURITY HUB
@@ -609,6 +843,31 @@ def usd(x: float) -> str:
     return f"${x:,.0f}"
 
 
+DETAIL_COLS = ["servicio", "recurso", "detalle", "cantidad", "precio_ref", "unidad_precio", "costo_lista", "costo_ajustado",
+               "pct", "tipo", "nota", "fuente"]
+DETAIL_CFG = {"servicio": "Servicio", "recurso": "Recurso", "detalle": "Detalle",
+              "cantidad": st.column_config.NumberColumn("Cantidad", format="%.2f"),
+              "precio_ref": st.column_config.NumberColumn("Precio de referencia (USD)", format="%.4f"),
+              "unidad_precio": "Unidad", "costo_lista": st.column_config.NumberColumn("Lista USD/mes", format="$%.2f"),
+              "costo_ajustado": st.column_config.NumberColumn("Ajustado USD/mes", format="$%.2f"),
+              "pct": st.column_config.ProgressColumn("% de la cuenta", format="%.1f %%", min_value=0, max_value=100),
+              "tipo": "Origen", "nota": "Nota", "fuente": st.column_config.LinkColumn("Fuente del precio", display_text="aws.amazon.com")}
+
+
+def detail_table(d: pd.DataFrame, height: int | None = None):
+    """Detalle de costos de una cuenta, ordenado de mayor a menor, con una fila TOTAL al final."""
+    d = d.copy()
+    tot_l, tot_a = d["costo_lista"].sum(), d["costo_ajustado"].sum()
+    d["pct"] = 100 * d["costo_ajustado"] / max(tot_a, 0.01)
+    d = d.sort_values("costo_ajustado", ascending=False)[DETAIL_COLS]
+    total = pd.DataFrame([{"servicio": "TOTAL", "recurso": f"{len(d)} líneas", "costo_lista": round(tot_l, 2),
+                           "costo_ajustado": round(tot_a, 2), "pct": 100.0, "tipo": "Σ", "nota": "Suma de la cuenta (USD/mes)"}])
+    d = pd.concat([d, total], ignore_index=True)
+    st.dataframe(d.style.apply(lambda r: ["font-weight:700;background-color:rgba(236,114,17,.16)" if r["servicio"] == "TOTAL" else ""
+                                          for _ in r], axis=1),
+                 hide_index=True, width="stretch", column_config=DETAIL_CFG, height=height or min(38 + 35 * len(d), 560))
+
+
 def page_finops():
     st.header("FinOps: costo estimado por cuenta (USD)")
     st.caption(f"Precio de lista público de AWS (us-east-1, on-demand, verificado {F.PRICES_DATE}) × inventario real de cada cuenta. "
@@ -632,28 +891,33 @@ def page_finops():
         st.caption(f"Inventario del {pd.Timestamp(mtime, unit='s', tz='UTC').tz_convert(A.LOCAL_TZ):%Y-%m-%d %H:%M} (hora de {A.TZ_NAME}) · "
                    f"cuentas: {', '.join(perfiles)}")
 
-    # ---------- variables comerciales
-    st.subheader("Variables comerciales")
-    v = st.columns(4)
-    margen = v[0].number_input("Margen del reseller / consorcio (%)", -30.0, 100.0, 0.0, 1.0,
-                               help="Positivo si el proveedor cobra encima del precio de AWS; negativo si traslada descuento.")
-    edp = v[1].number_input("Descuento privado AWS (EDP/PPA) (%)", 0.0, 40.0, 0.0, 1.0,
-                            help="Acuerdo de precio privado por compromiso de gasto. Lo negocia el reseller.")
-    creditos = v[2].number_input("Créditos promocionales (USD/mes)", 0.0, 100000.0, 0.0, 50.0,
-                                 help="Créditos MAP, POC o migración que aplique el reseller.")
-    soporte = v[3].selectbox("Plan de soporte", list(F.SUPPORT_PLANS), index=0,
-                             help="Con un reseller el soporte suele venir incluido (Partner-Led Support).")
-    v = st.columns(4)
-    sp_cov = v[0].slider("Cobertura Savings Plans (cómputo) %", 0, 100, 0, 5, help="Parte de EC2 + Fargate cubierta por un Compute Savings Plan.")
-    sp_desc = v[1].slider("Descuento del Savings Plan %", 0, 66, 27, 1, help="1 año sin pago inicial ≈ 27 %; 3 años ≈ 49 %.")
-    ri_cov = v[2].slider("Cobertura RDS Reserved %", 0, 100, 0, 5)
-    ri_desc = v[3].slider("Descuento RDS Reserved %", 0, 70, 38, 1, help="1 año sin pago inicial ≈ 35-40 %.")
-    v = st.columns(4)
-    iva_on = v[0].toggle("Incluir IVA", value=True, help="Ecuador grava los servicios digitales importados.")
-    iva = v[1].number_input("IVA (%)", 0.0, 30.0, 15.0, 1.0, disabled=not iva_on)
-    gov_n = v[2].number_input("Cuentas de gobierno no visibles", 0, 10, 3,
-                              help="Control Tower crea Management, Log Archive y Audit. No las ves, pero se pagan.")
-    gov_usd = v[3].number_input("USD/mes por cuenta de gobierno", 0.0, 500.0, 25.0, 5.0)
+    intro = st.container()  # gráfico de presentación: se dibuja al final, cuando ya está calculada la simulación QA
+
+    # ---------- variables comerciales (plegables)
+    with st.expander("Variables comerciales: descuentos, margen del reseller, soporte e IVA", expanded=False):
+        v = st.columns(4)
+        margen = v[0].number_input("Margen del reseller / consorcio (%)", -30.0, 100.0, 0.0, 1.0,
+                                   help="Positivo si el proveedor cobra encima del precio de AWS; negativo si traslada descuento.")
+        edp = v[1].number_input("Descuento privado AWS (EDP/PPA) (%)", 0.0, 40.0, 0.0, 1.0,
+                                help="Acuerdo de precio privado por compromiso de gasto. Lo negocia el reseller.")
+        creditos = v[2].number_input("Créditos promocionales (USD/mes)", 0.0, 100000.0, 0.0, 50.0,
+                                     help="Créditos MAP, POC o migración que aplique el reseller.")
+        soporte = v[3].selectbox("Plan de soporte", list(F.SUPPORT_PLANS), index=0,
+                                 help="Con un reseller el soporte suele venir incluido (Partner-Led Support).")
+        v = st.columns(4)
+        sp_cov = v[0].slider("Cobertura Savings Plans (cómputo) %", 0, 100, 0, 5, help="Parte de EC2 + Fargate cubierta por un Compute Savings Plan.")
+        sp_desc = v[1].slider("Descuento del Savings Plan %", 0, 66, 27, 1, help="1 año sin pago inicial ≈ 27 %; 3 años ≈ 49 %.")
+        ri_cov = v[2].slider("Cobertura RDS Reserved %", 0, 100, 0, 5)
+        ri_desc = v[3].slider("Descuento RDS Reserved %", 0, 70, 38, 1, help="1 año sin pago inicial ≈ 35-40 %.")
+        v = st.columns(4)
+        iva_on = v[0].toggle("Incluir IVA", value=True, help="Ecuador grava los servicios digitales importados.")
+        iva = v[1].number_input("IVA (%)", 0.0, 30.0, 15.0, 1.0, disabled=not iva_on)
+        gov_n = v[2].number_input("Cuentas de gobierno no visibles", 0, 10, 3,
+                                  help="Control Tower crea Management, Log Archive y Audit. No las ves, pero se pagan.")
+        gov_usd = v[3].number_input("USD/mes por cuenta de gobierno", 0.0, 500.0, 25.0, 5.0)
+    st.caption(f"Aplicado: margen {margen:+.0f} % · EDP {edp:.0f} % · Savings Plans {sp_cov} % × {sp_desc} % · "
+               f"RDS RI {ri_cov} % × {ri_desc} % · soporte: {soporte} · créditos {usd(creditos)} · "
+               f"IVA {f'{iva:.0f} %' if iva_on else 'no'} · {gov_n} cuentas de gobierno × {usd(gov_usd)}")
 
     # ---------- supuestos de uso (editables)
     with st.expander("Supuestos de uso que el inventario no puede medir (editables por cuenta)"):
@@ -672,6 +936,7 @@ def page_finops():
     allc = F.adjust(pd.concat([lines, unseen], ignore_index=True), k)
     t = F.totals(allc, k)
     ops = F.opportunities(inv, lines)
+    by_acc = allc.groupby("perfil")[["costo_lista", "costo_ajustado"]].sum().reset_index().sort_values("costo_ajustado", ascending=False)
 
     # ---------- KPIs
     st.subheader("Resumen mensual")
@@ -685,74 +950,316 @@ def page_finops():
     medido = allc[allc["tipo"] == "Medido"]["costo_ajustado"].sum()
     st.caption(f"Confianza: {medido / max(t['neto'], 1):.0%} del costo sale de recursos medidos; el resto son supuestos editables.")
 
-    by_acc = allc.groupby("perfil")[["costo_lista", "costo_ajustado"]].sum().reset_index().sort_values("costo_ajustado", ascending=False)
     g1, g2 = st.columns([1, 1])
-    fig = go.Figure()
-    fig.add_bar(x=by_acc["perfil"], y=by_acc["costo_lista"], name="Lista AWS", marker_color=GRIS)
-    fig.add_bar(x=by_acc["perfil"], y=by_acc["costo_ajustado"], name="Ajustado", marker_color=AZUL)
-    fig.update_layout(barmode="group", height=320, margin=dict(l=0, r=0, t=36, b=0), title="Costo mensual por cuenta (USD)",
-                      title_font_size=13, legend_title_text="")
+    cat_names = {"compute": "Cómputo", "database": "Bases de datos", "storage": "Almacenamiento", "network": "Red",
+                 "security": "Seguridad", "observability": "Observabilidad", "other": "Otros"}
+    bc = allc.assign(Categoría=allc["categoria"].map(cat_names).fillna("Otros")) \
+             .groupby(["perfil", "Categoría"])["costo_ajustado"].sum().reset_index()
+    fig = px.bar(bc, x="perfil", y="costo_ajustado", color="Categoría", height=320, title="¿En qué categoría gasta cada cuenta?",
+                 category_orders={"perfil": by_acc["perfil"].tolist()}, color_discrete_sequence=px.colors.qualitative.Safe)
+    fig.update_layout(margin=dict(l=0, r=0, t=36, b=0), title_font_size=13, legend_title_text="", xaxis_title="", yaxis_title="USD/mes")
     g1.plotly_chart(fig, width="stretch")
     tm = allc[allc["costo_ajustado"] > 0]
-    fig2 = px.treemap(tm, path=["perfil", "servicio"], values="costo_ajustado", height=320, title="¿En qué se va el dinero?",
+    fig2 = px.treemap(tm, path=["perfil", "servicio"], values="costo_ajustado", height=320, title="¿En qué servicio se va el dinero?",
                       color="categoria", color_discrete_sequence=px.colors.qualitative.Safe)
     fig2.update_traces(texttemplate="%{label}<br>USD %{value:,.0f}")
     fig2.update_layout(margin=dict(l=0, r=0, t=36, b=0), title_font_size=13)
     g2.plotly_chart(fig2, width="stretch")
 
-    # ---------- matriz de servicios habilitados
-    st.subheader("Servicios habilitados por cuenta")
-    svc = allc.groupby(["servicio", "perfil"])["costo_ajustado"].sum().unstack(fill_value=0)
-    on = inv.assign(on=lambda d: (d["cantidad"] > 0) & ~d["detalle"].isin(["no", "grabando=False", "DISABLED"])) \
-            .groupby(["servicio", "perfil"])["on"].any().unstack(fill_value=False)
-    mat = pd.DataFrame(index=sorted(set(svc.index) | set(on.index)))
-    for p in [*perfiles, *[x for x in svc.columns if x not in perfiles]]:
-        en = on[p] if p in on else pd.Series(dtype=bool)
-        co = svc[p] if p in svc else pd.Series(dtype=float)
-        mat[p] = [("✔ " + (f"{co.get(s, 0):,.0f}" if co.get(s, 0) else "0")) if (en.get(s, False) or co.get(s, 0) > 0) else "—"
-                  for s in mat.index]
-    mat["Total USD/mes"] = svc.sum(axis=1).reindex(mat.index).fillna(0).round(0)
-    mat = mat.sort_values("Total USD/mes", ascending=False)
-    st.dataframe(mat.rename_axis("Servicio").reset_index(), hide_index=True, width="stretch",
-                 column_config={"Servicio": st.column_config.TextColumn(width="medium"),
-                                "Total USD/mes": st.column_config.NumberColumn(format="%.0f")})
-    st.caption("✔ = habilitado (valor = USD/mes ajustado) · — = no habilitado o sin recursos en la región.")
+    # ---------- servicios por cuenta
+    services_table(inv, allc, by_acc["perfil"].tolist())
 
     # ---------- detalle por cuenta
     st.subheader("Detalle por cuenta")
-    cols = ["servicio", "recurso", "detalle", "cantidad", "precio_ref", "unidad_precio", "costo_lista", "costo_ajustado", "pct", "tipo", "nota", "fuente"]
-    cfg = {"precio_ref": st.column_config.NumberColumn("Precio de referencia (USD)", format="%.4f"),
-           "unidad_precio": "Unidad", "costo_lista": st.column_config.NumberColumn("Lista USD/mes", format="%.2f"),
-           "costo_ajustado": st.column_config.NumberColumn("Ajustado USD/mes", format="%.2f"),
-           "pct": st.column_config.ProgressColumn("% de la cuenta", format="%.1f %%", min_value=0, max_value=100),
-           "tipo": "Origen", "fuente": st.column_config.LinkColumn("Fuente del precio", display_text="aws.amazon.com")}
     tabs = st.tabs([*by_acc["perfil"]])
     for tab, p in zip(tabs, by_acc["perfil"]):
         with tab:
-            d = allc[allc["perfil"] == p].copy()
-            d["pct"] = 100 * d["costo_ajustado"] / max(d["costo_ajustado"].sum(), 0.01)
+            d = allc[allc["perfil"] == p]
             acc = d["cuenta"].dropna().iloc[0] if "cuenta" in d and d["cuenta"].notna().any() else "-"
-            st.markdown(f"**{p}** · cuenta {acc} · lista {usd(d['costo_lista'].sum())} · ajustado **{usd(d['costo_ajustado'].sum())}**/mes")
-            st.dataframe(d.sort_values("costo_ajustado", ascending=False)[cols], hide_index=True, width="stretch", column_config=cfg)
+            m = st.columns([2, 1, 1, 1])
+            m[0].markdown(f"**{p}** · cuenta {acc}  \n<span class='small'>{len(d)} líneas · "
+                          f"{(d['tipo'] == 'Medido').mean():.0%} medido</span>", unsafe_allow_html=True)
+            m[1].metric("Lista AWS / mes", usd(d["costo_lista"].sum()))
+            m[2].metric("Ajustado / mes", usd(d["costo_ajustado"].sum()))
+            m[3].metric("Ajustado / año", usd(d["costo_ajustado"].sum() * 12))
+            detail_table(d)
+
+    # ---------- simulación de cuenta nueva
+    sim = page_finops_sim(inv, asm, k, allc, lines)
+
+    # ---------- gráfico de presentación (arriba de la página)
+    with intro:
+        presentation_chart(by_acc, t, sim)
 
     # ---------- oportunidades
     st.subheader("Oportunidades de ahorro")
     if ops.empty:
         st.success("Sin oportunidades evidentes con las reglas actuales.")
     else:
-        st.dataframe(ops, hide_index=True, width="stretch",
-                     column_config={"ahorro_mes": st.column_config.NumberColumn("Ahorro USD/mes", format="%.0f"),
-                                    "por_que": "Por qué", "perfil": "Cuenta"})
+        tot = ops["ahorro_mes"].sum()
+        with st.expander(f"{len(ops)} oportunidades · hasta {usd(tot)}/mes ({usd(tot * 12)}/año) a precio de lista", expanded=False):
+            by = ops.groupby("perfil")["ahorro_mes"].sum().sort_values(ascending=False)
+            m = st.columns(min(len(by), 4) or 1)
+            for col, (p, v) in zip(m, by.items()):
+                col.metric(p, f"{usd(v)}/mes", border=True)
+            esf = st.segmented_control("Esfuerzo", ["Todos", "Bajo", "Medio"], default="Todos", key="ops_esf")
+            vv = ops if esf in (None, "Todos") else ops[ops["esfuerzo"] == esf]
+            st.dataframe(vv, hide_index=True, width="stretch",
+                         column_config={"perfil": "Cuenta", "oportunidad": "Oportunidad", "por_que": st.column_config.TextColumn("Por qué", width="large"),
+                                        "ahorro_mes": st.column_config.NumberColumn("Ahorro USD/mes", format="$%.0f"), "esfuerzo": "Esfuerzo"})
+            st.caption("Algunas se solapan (p. ej. Savings Plan y horario de oficina sobre la misma instancia): no sumes todo como ahorro seguro.")
     st.download_button("Descargar detalle (CSV)", allc.to_csv(index=False).encode("utf-8"), "finops_detalle.csv", "text/csv")
     with st.expander("Cómo se calcula y qué no incluye"):
         st.markdown(f"""
 - **Medido:** recursos que el script encontró (EC2, EBS, RDS, Fargate, VPN, TGW, ALB/NLB, IPv4, WAF, FMS…) × precio de lista × {F.H} h/mes.
 - **Estimado:** uso que no se ve sin Cost Explorer (transferencia, requests, eventos de GuardDuty, ítems de Config, chequeos de Security Hub). Edita los supuestos.
 - **Cuentas de gobierno:** Control Tower no cobra, pero las cuentas Management, Log Archive y Audit pagan Config, CloudTrail, GuardDuty, Security Hub y S3.
-- **No incluye:** impuestos distintos al IVA, Marketplace, licencias BYOL, picos puntuales, capa gratuita ni redondeos del reseller.
+- **No incluye:** impuestos distintos al IVA, Marketplace, licencias BYOL, picos puntuales, capa gratuita ni redondeos del reseller. Backup y DynamoDB aún no tienen precio en el catálogo.
 - **Orden de los ajustes:** lista → Savings Plans/RI (solo cómputo y RDS) → descuento privado → margen del reseller → + soporte → − créditos → + IVA.
-- Precios: [EC2]({F.SRC['ec2']}) · [RDS]({F.SRC['rds_mariadb']}) · [Fargate]({F.SRC['fargate']}) · [VPC]({F.SRC['vpc']}) · [WAF]({F.SRC['waf']}) · [Firewall Manager]({F.SRC['fms']}) · [Savings Plans]({F.SRC['sp']}) · [Soporte]({F.SRC['support']})
+- **Simulación QA:** copia los componentes elegidos de la cuenta origen y aplica el % de capacidad: cada duplicación sube un tamaño de instancia (EC2 y RDS; al bajar del mínimo pasa a la familia t3/t3a), escala vCPU/memoria de Fargate y el almacenamiento. Con Aurora se cobran instancias writer/reader + almacenamiento de clúster + E/S. Los componentes agregados a mano no se escalan.
+- Precios: [EC2]({F.SRC['ec2']}) · [RDS]({F.SRC['rds_mariadb']}) · [Aurora]({F.SRC['rds_aurora']}) · [Fargate]({F.SRC['fargate']}) · [VPC]({F.SRC['vpc']}) · [WAF]({F.SRC['waf']}) · [Firewall Manager]({F.SRC['fms']}) · [Savings Plans]({F.SRC['sp']}) · [Soporte]({F.SRC['support']})
 """)
+
+
+def presentation_chart(by_acc: pd.DataFrame, t: dict, sim: dict | None):
+    """Barra por cuenta con su costo mensual ajustado; la cuenta simulada aparece aparte, rayada y sin sumar al total."""
+    d = by_acc[["perfil", "costo_ajustado"]].copy()
+    d["tipo"] = ["Gobierno (estimado)" if "gobierno" in p else "Cuenta actual" for p in d["perfil"]]
+    if sim:
+        d = pd.concat([d, pd.DataFrame([{"perfil": sim["nombre"] + " (simulada)", "costo_ajustado": sim["neto"],
+                                         "tipo": "Simulada (no suma)"}])], ignore_index=True)
+    color = {"Cuenta actual": AZUL, "Gobierno (estimado)": GRIS, "Simulada (no suma)": NARANJA}
+    fig = go.Figure()
+    for tp, g in d.groupby("tipo", sort=False):
+        fig.add_bar(x=g["perfil"], y=g["costo_ajustado"], name=tp, marker_color=color[tp],
+                    marker_pattern_shape="/" if tp.startswith("Simulada") else "",
+                    text=[usd(x) for x in g["costo_ajustado"]], textposition="outside", cliponaxis=False,
+                    hovertemplate="%{x}: USD %{y:,.0f}/mes<extra></extra>")
+    fig.update_layout(height=380, margin=dict(l=0, r=0, t=70, b=0), barmode="group", bargap=0.35,
+                      title=dict(text=f"Costo mensual por cuenta · total {usd(t['neto'])}/mes sin IVA · "
+                                      f"{usd(t['total'])}/mes a pagar · {usd(t['total'] * 12)}/año",
+                                 x=0.5, xanchor="center", font_size=16),
+                      legend=dict(orientation="h", y=1.06, x=0.5, xanchor="center", title_text=""),
+                      yaxis_title="USD/mes", xaxis_title="", uniformtext_minsize=11)
+    fig.update_xaxes(categoryorder="array", categoryarray=d["perfil"].tolist())
+    st.plotly_chart(fig, width="stretch")
+
+
+def services_table(inv: pd.DataFrame, allc: pd.DataFrame, cuentas: list[str]):
+    """Matriz servicio × cuenta en USD/mes, con qué es cada servicio y en cuántas cuentas está."""
+    st.subheader("Servicios por cuenta (USD/mes)")
+    svc = allc.groupby(["servicio", "perfil"])["costo_ajustado"].sum().unstack()
+    on = inv.assign(on=lambda d: (d["cantidad"] > 0) & ~d["detalle"].isin(["no", "grabando=False", "DISABLED"])) \
+            .groupby(["servicio", "perfil"])["on"].any().unstack(fill_value=False)
+    services = sorted(set(svc.index) | set(on[on.any(axis=1)].index))
+    tbl = pd.DataFrame(index=services)
+    for p in cuentas:
+        cost = svc[p] if p in svc else pd.Series(dtype=float)
+        en = on[p] if p in on else pd.Series(dtype=bool)
+        tbl[p] = [c if (c := cost.get(s, 0)) and not pd.isna(c) and c > 0 else (0.0 if en.get(s, False) else float("nan"))
+                  for s in services]
+    tbl["Total"] = tbl[cuentas].sum(axis=1)
+    tbl = tbl[(tbl["Total"] > 0) | tbl[cuentas].notna().any(axis=1)].sort_values("Total", ascending=False)
+    gran = tbl["Total"].sum()
+    tbl["% del total"] = 100 * tbl["Total"] / max(gran, 0.01)
+    tbl["Cuentas"] = [f"{int(n)} de {len(cuentas)}" for n in tbl[cuentas].notna().sum(axis=1)]
+    tbl.insert(0, "Qué es", [F.SERVICE_INFO.get(s, "") for s in tbl.index])
+    total_row = pd.DataFrame([{"Qué es": "Suma de todos los servicios", **{p: tbl[p].sum() for p in cuentas},
+                               "Total": gran, "% del total": 100.0, "Cuentas": ""}], index=["TOTAL"])
+    tbl = pd.concat([tbl, total_row]).rename_axis("Servicio").reset_index()
+    money = [*cuentas, "Total"]
+    vmax = max(tbl.loc[tbl["Servicio"] != "TOTAL", cuentas].max().max() or 1, 1)
+
+    def shade(row):
+        if row["Servicio"] == "TOTAL":
+            return ["font-weight:700;background-color:rgba(236,114,17,.16)"] * len(row)
+        out = []
+        for col, val in row.items():
+            if col in cuentas and not pd.isna(val) and val > 0:
+                out.append(f"background-color:rgba(37,99,235,{0.10 + 0.55 * val / vmax:.2f})")
+            else:
+                out.append("")
+        return out
+
+    fmt = lambda x: "—" if pd.isna(x) else ("activo · $0" if x == 0 else f"${x:,.0f}")
+    sty = tbl.style.apply(shade, axis=1).format({**{c: fmt for c in money}, "% del total": "{:.1f} %"})
+    st.dataframe(sty, hide_index=True, width="stretch", height=min(40 + 35 * len(tbl), 640),
+                 column_config={"Servicio": st.column_config.TextColumn(width="small"),
+                                "Qué es": st.column_config.TextColumn(width="medium")})
+    st.caption("Cada celda es lo que cuesta ese servicio en esa cuenta, en USD por mes, ya con descuentos y margen (sin IVA). "
+               "Más intenso = más caro. «activo · $0» = habilitado pero sin costo propio (capa gratuita o se cobra en otra cuenta). "
+               "«—» = no se usa en esa cuenta. «Cuentas» = en cuántas de las cuentas está activo.")
+
+
+def page_finops_sim(inv, asm, k, allc, lines) -> dict | None:
+    """Simula una cuenta nueva (p. ej. ambiente QA) como réplica de una existente, empezando en un % de su capacidad."""
+    st.subheader("Simulación: nueva cuenta «ambiente QA»")
+    st.caption("Réplica de una cuenta existente para pruebas y desarrollo. Empieza al 25 % de la capacidad de la cuenta origen "
+               "y súbela paso a paso. Usa los mismos precios, descuentos e IVA de arriba.")
+    perfiles = sorted(inv["perfil"].unique())
+    qa_base = os.environ.get("AWS_PULSE_QA_BASE", "").lower()  # cuenta origen por defecto; si no, la más cara
+    default = next((p for p in perfiles if qa_base and p.lower() == qa_base),
+                   allc.groupby("perfil")["costo_ajustado"].sum().reindex(perfiles).idxmax())
+    c = st.columns(4)
+    base_p = c[0].selectbox("Cuenta origen (se replica)", perfiles, index=perfiles.index(default))
+    nombre = (c[1].text_input("Nombre de la cuenta nueva", "ambiente QA").strip() or "ambiente QA")
+    horario = c[2].selectbox("Horario del cómputo", list(F.SCHEDULES), index=0,
+                             help="Apagar QA fuera de oficina baja EC2, Fargate y RDS. Para estimar el techo deja 24x7.")
+    motor = c[3].radio("Motor de base de datos", ["Igual que origen", "Aurora"], horizontal=True,
+                       help="Aurora: el almacenamiento es del clúster (no se duplica por réplica) y se cobra E/S.")
+    pct = st.select_slider(f"Capacidad de {nombre} respecto a {base_p}", F.CAPACITY_LEVELS, value=25,
+                           format_func=lambda x: f"{x} %",
+                           help="Cada duplicación sube un tamaño de instancia: 25 % = dos tamaños menos, 200 % = uno más.")
+    cp = F.capacity_params(pct)
+    st.caption(f"Con {pct} %: EC2 y RDS {cp['ec2_step']:+d} tamaño(s) · Fargate ×{cp['ecs_size']:g} vCPU/memoria por tarea · "
+               f"almacenamiento ×{cp['storage_mult']:g} · alta disponibilidad: {cp['rds_maz']}.")
+
+    sk = f"qa_{base_p}_{pct}"
+    with st.expander("Ajuste fino por servicio (opcional)"):
+        col = st.columns(4)
+        ec2_step = col[0].slider("EC2: tamaño (pasos)", -3, 3, cp["ec2_step"], key=sk + "e1",
+                                 help="+1 = siguiente tamaño de la misma familia (m6a.xlarge → m6a.2xlarge).")
+        ec2_mult = col[0].slider("EC2: cantidad (×)", 0.5, 3.0, cp["ec2_mult"], 0.5, key=sk + "e2")
+        ecs_size = col[1].select_slider("Fargate: vCPU y memoria (×)", [0.25, 0.5, 1.0, 2.0, 4.0], cp["ecs_size"], key=sk + "f1")
+        ecs_mult = col[1].slider("Fargate: tareas por servicio (×)", 0.5, 4.0, cp["ecs_mult"], 0.5, key=sk + "f2")
+        rds_step = col[2].slider("Base de datos: tamaño (pasos)", -3, 3, cp["rds_step"], key=sk + "r1")
+        rds_maz = col[2].radio("Alta disponibilidad", ["Igual que origen", "Multi-AZ", "Single-AZ"],
+                               index=["Igual que origen", "Multi-AZ", "Single-AZ"].index(cp["rds_maz"]), key=sk + "r2")
+        storage_mult = col[3].slider("Almacenamiento (×)", 0.25, 3.0, cp["storage_mult"], 0.25, key=sk + "s1")
+        readers = col[3].number_input("Readers Aurora adicionales", 0, 5, 0, key=sk + "a1", disabled=motor != "Aurora")
+        aio = col[3].number_input("E/S Aurora (millones/mes)", 0.0, 100000.0, 50.0 * pct / 25, 25.0, key=sk + "a2")
+
+    # ---------- componentes: arquitectura del origen + agregados
+    st.markdown(f"**Componentes de {nombre}** · parten de la arquitectura de {base_p}; desmarca lo que no necesites o agrega lo que falte")
+    base = inv[inv["perfil"] == base_p]
+    bl = lines[lines["perfil"] == base_p]
+    cost_row = bl.groupby("src_row")["costo_lista"].sum() if "src_row" in bl else pd.Series(dtype=float)
+    on = (base["cantidad"] > 0) & ~base["detalle"].isin(["no", "grabando=False", "DISABLED"])
+    base = base[on | base.index.isin(cost_row[cost_row > 0].index)]
+    ek = f"qa_extra_{base_p}"
+    extras = st.session_state.setdefault(ek, [])
+
+    with st.expander("Agregar un componente que no existe en " + base_p):
+        a = st.columns(4)
+        kind = a[0].selectbox("Tipo", F.COMPONENT_KINDS, key="qa_kind")
+        cname = a[1].text_input("Nombre", "QA-NUEVO", key="qa_cname")
+        qty = a[2].number_input("Cantidad" + (" (GB)" if "(GB)" in kind else ""), 1.0, 100000.0,
+                                100.0 if "(GB)" in kind else 1.0, 1.0, key="qa_qty")
+        o = {}
+        if kind == "Servidor EC2":
+            o["itype"] = a[3].selectbox("Tipo de instancia", sorted(F.EC2), index=sorted(F.EC2).index("t3a.medium"), key="qa_it")
+            o["plat"] = a[3].radio("Sistema", ["Linux/UNIX", "Windows"], horizontal=True, key="qa_plat")
+        elif kind == "Base de datos RDS / Aurora":
+            o["eng"] = a[3].selectbox("Motor", ["mariadb", "mysql", "postgres", "aurora-mysql", "aurora-postgresql"], key="qa_eng")
+            clases = sorted({cl for cl, e in F.RDS if e == o["eng"]})
+            o["cls"] = a[3].selectbox("Clase", clases, key="qa_cls")
+            o["gb"] = a[3].number_input("Almacenamiento (GB)", 20, 65536, 50, key="qa_gb")
+            o["maz"] = a[3].toggle("Multi-AZ", key="qa_maz", disabled=o["eng"].startswith("aurora"))
+        elif kind == "Servicio ECS Fargate":
+            o["vcpu"] = a[3].select_slider("vCPU por tarea", [0.25, 0.5, 1.0, 2.0, 4.0], 0.5, key="qa_vcpu")
+            o["gb"] = a[3].select_slider("Memoria por tarea (GB)", [0.5, 1.0, 2.0, 4.0, 8.0, 16.0], 1.0, key="qa_mem")
+        b = st.columns([1, 1, 3])
+        if b[0].button("Agregar a QA", type="primary"):
+            extras.extend(F.new_component(kind, cname, qty, **o))
+            st.rerun()
+        if extras and b[1].button("Quitar todos los agregados"):
+            st.session_state[ek] = []
+            st.session_state.pop(f"qa_comp_{base_p}", None)
+            st.rerun()
+
+    comp = pd.DataFrame({"Incluir": [s not in F.ORG_SERVICES for s in base["servicio"]], "Origen": base_p,
+                         "Servicio": base["servicio"].values, "Componente": base["recurso"].values,
+                         "Detalle": base["detalle"].astype(str).values, "Cantidad": base["cantidad"].values, f"USD/mes en {base_p}": [cost_row.get(i, 0.0) for i in base.index]},
+                        index=[f"g{i}" for i in base.index])
+    if extras:
+        ex = pd.DataFrame(extras)
+        comp = pd.concat([comp, pd.DataFrame({"Incluir": True, "Origen": "Agregado", "Servicio": ex["servicio"].values,
+                                              "Componente": ex["recurso"].values, "Detalle": ex["detalle"].values,
+                                              "Cantidad": ex["cantidad"].values, f"USD/mes en {base_p}": 0.0},
+                                             index=[f"x{i}" for i in range(len(ex))])])
+    ed = st.data_editor(comp, key=f"qa_comp_{base_p}", width="stretch", hide_index=True,
+                        height=min(40 + 35 * len(comp), 420), disabled=["Origen", "Servicio", "Componente", "Detalle", f"USD/mes en {base_p}"],
+                        column_config={"Incluir": st.column_config.CheckboxColumn("Incluir", width="small"),
+                                       "Cantidad": st.column_config.NumberColumn("Cantidad base", format="%.2f", min_value=0.0,
+                                                                                 help="La de la cuenta origen. El % de capacidad se aplica encima (no a los agregados)."),
+                                       f"USD/mes en {base_p}": st.column_config.NumberColumn(format="$%.0f")})
+    st.caption(f"Desmarcados por defecto: {', '.join(F.ORG_SERVICES)} (se pagan una sola vez en la organización).")
+
+    # ---------- simulación
+    prm = dict(ec2_step=ec2_step, ec2_mult=ec2_mult, ecs_mult=ecs_mult, ecs_size=ecs_size, rds_step=rds_step, rds_motor=motor,
+               rds_maz=rds_maz, aurora_readers=readers, aurora_io=aio, storage_mult=storage_mult, horario=F.SCHEDULES[horario])
+    sel_g = ed[ed.index.str.startswith("g") & ed["Incluir"]]
+    src = base.loc[[int(i[1:]) for i in sel_g.index]].copy()
+    src["cantidad"] = sel_g["Cantidad"].astype(float).values
+    qa_inv, cambios = F.simulate_account(src, prm, nombre)
+    one_inv, _ = F.simulate_account(src, {"horario": 1.0}, nombre)
+    off = ed[~ed["Incluir"]]
+    if not off.empty:
+        cambios = pd.concat([cambios, pd.DataFrame({"servicio": off["Servicio"], "recurso": off["Componente"],
+                                                    "origen": off["Cantidad"].map(lambda x: f"{x:g}"), "simulado": "no se incluye"})],
+                            ignore_index=True)
+    sel_x = ed[ed.index.str.startswith("x") & ed["Incluir"]]
+    if not sel_x.empty:
+        frac = F.SCHEDULES[horario]
+        xr = pd.DataFrame([extras[int(i[1:])] for i in sel_x.index])
+        xr["cantidad"] = sel_x["Cantidad"].astype(float).values
+        comp_rows = xr["recurso"].isin(["instancia", "servicio"])
+        xr.loc[comp_rows, "cantidad"] *= frac
+        xr["perfil"], xr["cuenta"] = nombre, "(nueva)"
+        if xr["detalle"].str.contains("aurora").any() and not (qa_inv.get("recurso", pd.Series(dtype=str)) == "aurora I/O").any():
+            xr = pd.concat([xr, pd.DataFrame([{"servicio": "RDS", "recurso": "aurora I/O", "detalle": "millones de E/S",
+                                               "cantidad": aio, "unidad": "M-IO", "perfil": nombre, "cuenta": "(nueva)"}])])
+        qa_inv = pd.concat([qa_inv, xr], ignore_index=True)
+        cambios = pd.concat([cambios, pd.DataFrame({"servicio": xr["servicio"], "recurso": xr["recurso"], "origen": "—",
+                                                    "simulado": "agregado: " + xr["detalle"].astype(str)})], ignore_index=True)
+    if qa_inv.empty:
+        st.info("No hay componentes incluidos en la simulación.")
+        return None
+    a_qa = {nombre: asm.get(base_p, F.DEFAULT_ASSUMPTIONS)}
+    cost = lambda iv: F.adjust(pd.concat([F.price_lines(iv, a_qa), F.unseen_lines([nombre], a_qa, {})], ignore_index=True), k)
+    qa = cost(qa_inv)
+    one = cost(one_inv) if not one_inv.empty else qa.iloc[0:0]
+    t_qa = F.totals(qa, {**k, "creditos": 0})
+    base_adj = allc[allc["perfil"] == base_p]["costo_ajustado"].sum()
+
+    m = st.columns(5)
+    m[0].metric(f"{base_p} hoy (ajustado)", usd(base_adj), border=True)
+    m[1].metric("Réplica al 100 %", usd(one["costo_ajustado"].sum()), border=True, help="Mismos componentes incluidos, sin escalar.")
+    m[2].metric(f"{nombre} al {pct} %", usd(t_qa["neto"]),
+                delta=f"{100 * t_qa['neto'] / max(base_adj, 1):.0f} % de {base_p}", delta_color="off", border=True)
+    m[3].metric("Total a pagar / mes (est.)", usd(t_qa["total"]),
+                help=f"Ajustado + soporte {usd(t_qa['soporte'])} + IVA {usd(t_qa['iva'])}. Sin créditos.", border=True)
+    m[4].metric("Proyección anual", usd(t_qa["total"] * 12), border=True)
+
+    g1, g2 = st.columns([3, 2])
+    lbl_one, lbl_qa = "Réplica 100 %", f"{nombre} {pct} %"
+    cmp_ = pd.concat([allc[allc["perfil"] == base_p].assign(cuenta_=base_p), one.assign(cuenta_=lbl_one),
+                      qa.assign(cuenta_=lbl_qa)]).groupby(["servicio", "cuenta_"])["costo_ajustado"].sum().reset_index()
+    order = cmp_.groupby("servicio")["costo_ajustado"].max().sort_values(ascending=False).head(12).index.tolist()
+    cmp_ = cmp_[cmp_["servicio"].isin(order)]
+    fig = px.bar(cmp_, x="servicio", y="costo_ajustado", color="cuenta_", barmode="group", height=340,
+                 category_orders={"servicio": order, "cuenta_": [base_p, lbl_one, lbl_qa]},
+                 color_discrete_sequence=[GRIS, AZUL, NARANJA], title=f"USD/mes por servicio: {base_p} vs {nombre}")
+    fig.update_layout(margin=dict(l=0, r=0, t=36, b=0), title_font_size=13, legend_title_text="", xaxis_title="", yaxis_title="")
+    g1.plotly_chart(fig, width="stretch")
+    with g2:
+        st.markdown("**Cambios aplicados**")
+        if cambios.empty:
+            st.caption("Sin cambios: réplica exacta.")
+        else:
+            st.dataframe(cambios.rename(columns={"servicio": "Servicio", "recurso": "Recurso", "origen": f"En {base_p}",
+                                                 "simulado": f"En {nombre}"}),
+                         hide_index=True, width="stretch", height=300)
+    with st.expander(f"Detalle de costos de «{nombre}»", expanded=False):
+        detail_table(qa)
+        st.download_button(f"Descargar detalle de {nombre} (CSV)", qa.to_csv(index=False).encode("utf-8"),
+                           "finops_simulacion_qa.csv", "text/csv")
+    sin = qa[qa["tipo"] == "Sin precio"]
+    if not sin.empty:
+        st.warning("Sin precio en el catálogo (cuentan 0): " + ", ".join(sin["detalle"].astype(str).str.split("|").str[0].unique()))
+    st.caption("Supuestos de uso (tráfico, logs, WAF…) = los de la cuenta origen. Precios de lista on-demand; "
+               "en QA conviene horario de oficina y Savings Plans solo si el ambiente será permanente.")
+    return {"nombre": nombre, "neto": t_qa["neto"], "pct": pct}
 
 
 PAGES = {"Sesión": page_session, "Resumen": page_summary, "Salud y VPN": page_health,

@@ -145,7 +145,7 @@ export AWS_PULSE_PASSWORD='a-long-passphrase'
 ./iniciar_dashboard.sh          # listens on 0.0.0.0:8501
 ```
 
-On WSL 2 also enable mirrored networking and open the port; see [docs/NETWORK_ACCESS.md](docs/NETWORK_ACCESS.md). Times are shown in `AWS_PULSE_TZ` (default `America/Guayaquil`).
+On WSL 2 also enable mirrored networking and open the port; see [docs/NETWORK_ACCESS.md](docs/NETWORK_ACCESS.md). Times are shown in `AWS_PULSE_TZ` (default `America/Guayaquil`). The FinOps QA simulation starts from the `AWS_PULSE_QA_BASE` account (default: the most expensive one).
 
 ## Cost
 
@@ -154,7 +154,7 @@ Inventory and configuration calls have no per-request charge. Only CloudWatch me
 ## Roadmap
 
 - [ ] Local history (SQLite) with trend charts: VPN outages, critical findings, RDS CPU
-- [x] Dark theme and local time zone
+- [x] Light corporate theme and local time zone
 - [x] FinOps module (estimated cost per account)
 - [ ] Email or Teams alerts when an indicator turns critical
 - [ ] Export the summary to PDF

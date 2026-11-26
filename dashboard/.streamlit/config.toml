@@ -1,10 +1,19 @@
 [theme]
-base = "dark"
-primaryColor = "#FF9900"
-backgroundColor = "#0B1220"
-secondaryBackgroundColor = "#121B2E"
-textColor = "#E6ECF5"
+base = "light"
+primaryColor = "#EC7211"
+backgroundColor = "#F5F7FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1F2937"
+borderColor = "#D5DBE5"
 font = "sans serif"
+
+# Barra lateral oscura (azul AWS) para contrastar con el fondo claro
+[theme.sidebar]
+backgroundColor = "#232F3E"
+secondaryBackgroundColor = "#2F3E52"
+textColor = "#FFFFFF"
+primaryColor = "#FF9900"
+borderColor = "#3E4F66"
 
 [client]
 toolbarMode = "minimal"

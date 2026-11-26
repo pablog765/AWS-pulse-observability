@@ -145,7 +145,7 @@ export AWS_PULSE_PASSWORD='una-frase-larga'
 ./iniciar_dashboard.sh          # escucha en 0.0.0.0:8501
 ```
 
-En WSL 2 además hay que activar la red en modo espejo y abrir el puerto: ver [docs/NETWORK_ACCESS.md](docs/NETWORK_ACCESS.md). Las horas se muestran en `AWS_PULSE_TZ` (por defecto `America/Guayaquil`).
+En WSL 2 además hay que activar la red en modo espejo y abrir el puerto: ver [docs/NETWORK_ACCESS.md](docs/NETWORK_ACCESS.md). Las horas se muestran en `AWS_PULSE_TZ` (por defecto `America/Guayaquil`). La simulación QA de FinOps parte de la cuenta `AWS_PULSE_QA_BASE` (por defecto, la más cara).
 
 ## Costos
 
@@ -154,7 +154,7 @@ Las consultas de inventario y configuración no tienen costo por llamada. Solo l
 ## Hoja de ruta
 
 - [ ] Histórico local (SQLite) con gráficos de tendencia: caídas de VPN, hallazgos críticos, CPU de RDS
-- [x] Tema oscuro y zona horaria local
+- [x] Tema claro corporativo y zona horaria local
 - [x] Módulo FinOps (costo estimado por cuenta)
 - [ ] Alertas por correo o Teams cuando un indicador pasa a crítico
 - [ ] Exportar el resumen a PDF

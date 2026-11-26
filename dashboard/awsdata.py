@@ -116,6 +116,35 @@ def read_aws_config() -> tuple[list[str], list[str]]:
     return sessions, profiles
 
 
+def config_account_ids() -> dict[str, str]:
+    """ID de cuenta -> perfil, según sso_account_id en ~/.aws/config (sin llamar a AWS)."""
+    p = Path(os.environ.get("AWS_CONFIG_FILE", Path.home() / ".aws" / "config"))
+    cp = configparser.ConfigParser()
+    try:
+        cp.read(p)
+    except configparser.Error:
+        return {}
+    out = {}
+    for sec in cp.sections():
+        if sec.startswith("profile ") and cp.has_option(sec, "sso_account_id"):
+            out.setdefault(cp.get(sec, "sso_account_id").strip(), sec.split(" ", 1)[1])
+    return out
+
+
+def account_names(profiles: list[str]) -> dict[str, str]:
+    """ID -> nombre legible. Primero los nombres de AWS Organizations (si algún perfil puede listarlos: cuenta de
+    gestión o administrador delegado), luego el perfil de ~/.aws/config."""
+    names = {}
+    for p in profiles:
+        d = try_aws(p, "organizations", "list-accounts", region=False, default=None)
+        if d and d.get("Accounts"):
+            names = {a["Id"]: a.get("Name") or a["Id"] for a in d["Accounts"]}
+            break
+    for acc, prof in config_account_ids().items():
+        names[acc] = f"{names[acc]} (perfil {prof})" if acc in names and names[acc] != prof else prof
+    return names
+
+
 def identity(profile: str) -> dict:
     try:
         d = aws(profile, "sts", "get-caller-identity", region=False, timeout=30)
@@ -184,6 +213,15 @@ def vpn_tunnels(profile: str) -> list[dict]:
                         "--statistics", "Minimum", default={})
             dps = m.get("Datapoints", []) if m else []
             down_h = sum(1 for p in dps if p.get("Minimum", 1) < 1) if dps else None
+            mb = None  # tráfico de las últimas 24 h (entrada + salida) para detectar túneles sin uso
+            for metric in ("TunnelDataIn", "TunnelDataOut"):
+                md = try_aws(profile, "cloudwatch", "get-metric-statistics", "--namespace", "AWS/VPN",
+                             "--metric-name", metric, "--dimensions", f"Name=TunnelIpAddress,Value={ip}",
+                             "--start-time", iso(start), "--end-time", iso(end), "--period", "86400",
+                             "--statistics", "Sum", default={})
+                pts = (md or {}).get("Datapoints", [])
+                if md:
+                    mb = (mb or 0) + sum(p.get("Sum", 0) for p in pts) / 1024 ** 2
             changed = to_local(t.get("LastStatusChange"))
             rows.append({"cuenta": profile, "vpn": tag(v.get("Tags"), default=v["VpnConnectionId"]),
                          "vpn_id": v["VpnConnectionId"], "par_remoto": c.get("IpAddress", "-"),
@@ -192,7 +230,7 @@ def vpn_tunnels(profile: str) -> list[dict]:
                          "horas_en_estado": round((local_now() - changed).total_seconds() / 3600, 1) if changed is not None else None,
                          "rutas": t.get("AcceptedRouteCount", 0),
                          "ruteo": "Estático" if v.get("Options", {}).get("StaticRoutesOnly") else "BGP",
-                         "horas_caido_24h": down_h, "detalle": t.get("StatusMessage") or "-"})
+                         "horas_caido_24h": down_h, "trafico_24h_mb": round(mb, 1) if mb is not None else None, "detalle": t.get("StatusMessage") or "-"})
     return rows
 
 
@@ -226,6 +264,8 @@ def rds_instances(profile: str) -> list[dict]:
                     "aurora": str(i.get("Engine", "")).startswith("aurora"),
                     "cifrada": "Sí" if i.get("StorageEncrypted") else "No",
                     "respaldo_dias": i.get("BackupRetentionPeriod", 0),
+                    "asignado_gb": i.get("AllocatedStorage"), "max_autoescala_gb": i.get("MaxAllocatedStorage"),
+                    "tipo_disco": i.get("StorageType", "-"),
                     "publica": "Sí" if i.get("PubliclyAccessible") else "No"})
     return out
 
@@ -268,6 +308,50 @@ def rds_metrics(profile: str, db: dict, hours: int) -> pd.DataFrame:
         # AuroraReplicaLag viene en milisegundos; ReplicaLag en segundos -> todo a segundos
         df["lag"] = df["lag"] / 1000 if db["aurora"] else df["lag"]
     return df
+
+
+def rds_storage_history(profile: str, db: dict, since: dt.datetime) -> pd.DataFrame:
+    """Espacio diario desde `since`. RDS: FreeStorageSpace por instancia (usado = asignado - libre).
+    Aurora: VolumeBytesUsed del clúster (no hay espacio libre: crece solo hasta 128 TiB)."""
+    if db["aurora"]:
+        metric, dim = "VolumeBytesUsed", {"Name": "DBClusterIdentifier", "Value": db["cluster"]}
+    else:
+        metric, dim = "FreeStorageSpace", {"Name": "DBInstanceIdentifier", "Value": db["id"]}
+    q = [{"Id": "s", "MetricStat": {"Metric": {"Namespace": "AWS/RDS", "MetricName": metric, "Dimensions": [dim]},
+                                    "Period": 86400, "Stat": "Minimum" if metric == "FreeStorageSpace" else "Maximum"}}]
+    d = aws(profile, "cloudwatch", "get-metric-data", "--metric-data-queries", json.dumps(q),
+            "--start-time", iso(since), "--end-time", iso(now()))
+    r = next((x for x in d.get("MetricDataResults", []) if x.get("Timestamps")), None)
+    if not r:
+        return pd.DataFrame()
+    s = pd.Series(r["Values"], index=[to_local(t) for t in r["Timestamps"]]).sort_index() / 1024 ** 3
+    df = pd.DataFrame(index=s.index)
+    if metric == "FreeStorageSpace":
+        alloc = float(db.get("asignado_gb") or 0)
+        df["libre_gb"] = s
+        df["usado_gb"] = (alloc - s).clip(lower=0) if alloc else None
+        df["asignado_gb"] = alloc or None
+    else:
+        df["usado_gb"] = s
+        df["libre_gb"] = None
+        df["asignado_gb"] = None
+    return df
+
+
+def storage_growth(df: pd.DataFrame) -> tuple[pd.DataFrame, float | None]:
+    """Uso al cierre de cada mes, crecimiento mensual y crecimiento promedio compuesto (% por mes)."""
+    u = df["usado_gb"].dropna()
+    if u.empty:
+        return pd.DataFrame(), None
+    m = u.groupby(u.index.tz_localize(None).to_period("M")).last()
+    out = pd.DataFrame({"mes": m.index.astype(str), "usado_gb": m.values.round(1)})
+    out["crecimiento_gb"] = out["usado_gb"].diff().round(1)
+    out["crecimiento_pct"] = (100 * out["usado_gb"].pct_change()).round(2)
+    days = (u.index[-1] - u.index[0]).days
+    if days < 20 or u.iloc[0] <= 0:
+        return out, None
+    rate = (u.iloc[-1] / u.iloc[0]) ** (30.44 / days) - 1  # tasa mensual compuesta entre el primer y el último dato
+    return out, 100 * rate
 
 
 # ----------------------------------------------------------------------- WAF
@@ -401,11 +485,24 @@ def fms_policies(profile: str) -> tuple[str | None, list[dict]]:
         except json.JSONDecodeError:
             pass
         inc = (full.get("IncludeMap") or {})
+        groups = []
+        for fase, key in (("Antes de las reglas de la cuenta", "preProcessRuleGroups"), ("Después de las reglas de la cuenta", "postProcessRuleGroups")):
+            for g in msd.get(key) or []:
+                ident = g.get("managedRuleGroupIdentifier") or {}
+                name = ident.get("managedRuleGroupName") or g.get("ruleGroupArn", "-").split("/")[-2:][0]
+                ov = g.get("ruleActionOverrides") or []
+                n_count = sum(1 for o in ov if "count" in str(o.get("actionToUse", "")).lower()) + len(g.get("excludeRules") or [])
+                mode = (g.get("overrideAction") or {}).get("type", "NONE")
+                groups.append({"grupo": name, "fase": fase,
+                               "accion": "Solo cuenta (no bloquea)" if mode == "COUNT" else
+                                         f"Bloquea, salvo {n_count} regla(s) en modo conteo" if n_count else "Bloquea"})
         pols.append({"politica": p["PolicyName"], "tipo": p.get("SecurityServiceType"),
                      "aplica_a": p.get("ResourceType"), "auto_remedia": "Sí" if p.get("RemediationEnabled") else "No",
                      "alcance": ", ".join((inc.get("ACCOUNT") or []) + (inc.get("ORG_UNIT") or [])) or "Toda la organización",
                      "solo_tags": ", ".join(f"{t['Key']}={t.get('Value', '')}" for t in full.get("ResourceTags", [])) or "-",
-                     "logging": "Sí" if msd.get("loggingConfiguration") else "No",
+                     "logging": "Sí" if msd.get("loggingConfiguration") else "No", "grupos": groups,
+                     "accion_defecto": (msd.get("defaultAction") or {}).get("type", "-"),
+                     "excluye": ", ".join((full.get("ExcludeMap") or {}).get("ACCOUNT") or []) or "-",
                      "cumplimiento": [{"cuenta": c.get("MemberAccount"),
                                        "estado": (c.get("EvaluationResults") or [{}])[0].get("ComplianceStatus"),
                                        "violaciones": (c.get("EvaluationResults") or [{}])[0].get("ViolatorCount")}

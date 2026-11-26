@@ -5,9 +5,13 @@ sso_region = us-east-1
 
 [profile prod]
 sso_session = mi-sso
+sso_account_id = 111111111111
 [profile dev]
 sso_session = mi-sso
+sso_account_id = 222222222222
 [profile network]
 sso_session = mi-sso
+sso_account_id = 333333333333
 [profile security]
 sso_session = mi-sso
+sso_account_id = 444444444444

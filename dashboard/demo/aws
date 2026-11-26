@@ -65,19 +65,29 @@ if (svc, op) == ("ec2", "describe-customer-gateways"):
 if (svc, op) == ("cloudwatch", "get-metric-statistics"):
     dims = arg("--dimensions", "")
     down = "192.0.2.31" in dims or "192.0.2.32" in dims
+    if arg("--metric-name", "").startswith("TunnelData"):
+        mb = 0 if down else (850 if "192.0.2.1" in dims else 3)
+        out({"Datapoints": [{"Timestamp": iso(now - dt.timedelta(hours=24)), "Sum": mb * 1024 ** 2}]})
     out({"Datapoints": [{"Timestamp": iso(now - dt.timedelta(hours=h)), "Minimum": 0 if down and (h < 14 or "192.0.2.31" in dims) else 1} for h in range(24)]})
 
 if (svc, op) == ("rds", "describe-db-instances"):
     if prof != "prod": out({"DBInstances": []})
     out({"DBInstances": [
-        {"DBInstanceIdentifier": "app-db-writer", "Engine": "aurora-mysql", "EngineVersion": "8.0", "DBInstanceClass": "db.r6g.large",
-         "DBInstanceStatus": "available", "MultiAZ": False, "DBClusterIdentifier": "app-db", "StorageEncrypted": False, "BackupRetentionPeriod": 1, "PubliclyAccessible": False},
-        {"DBInstanceIdentifier": "app-db-reader", "Engine": "aurora-mysql", "EngineVersion": "8.0", "DBInstanceClass": "db.r6g.large",
-         "DBInstanceStatus": "available", "MultiAZ": False, "DBClusterIdentifier": "app-db", "StorageEncrypted": False, "BackupRetentionPeriod": 1, "PubliclyAccessible": False}]})
+        {"DBInstanceIdentifier": "app-db-writer", "Engine": "mariadb", "EngineVersion": "10.11.8", "DBInstanceClass": "db.m6g.large",
+         "DBInstanceStatus": "available", "MultiAZ": True, "StorageEncrypted": False, "BackupRetentionPeriod": 7, "PubliclyAccessible": False,
+         "AllocatedStorage": 200, "MaxAllocatedStorage": 400, "StorageType": "gp3"},
+        {"DBInstanceIdentifier": "app-db-reader", "Engine": "mariadb", "EngineVersion": "10.11.8", "DBInstanceClass": "db.t3.medium",
+         "DBInstanceStatus": "available", "MultiAZ": False, "StorageEncrypted": False, "BackupRetentionPeriod": 0, "PubliclyAccessible": False,
+         "ReadReplicaSourceDBInstanceIdentifier": "app-db-writer", "AllocatedStorage": 200, "StorageType": "gp3"}]})
+
+if (svc, op) == ("organizations", "list-accounts"):
+    if prof != "security":
+        print("AccessDeniedException: You don't have permissions to access this resource.", file=sys.stderr); sys.exit(254)
+    out({"Accounts": [{"Id": i, "Name": n} for i, n in [("111111111111", "Produccion-App"), ("222222222222", "Desarrollo"),
+        ("333333333333", "Red-Compartida"), ("444444444444", "Seguridad-Auditoria"), ("555555555555", "Sandbox-Pruebas")]]})
 
 if (svc, op) == ("rds", "describe-db-clusters"):
-    out({"DBClusters": [{"DBClusterMembers": [{"DBInstanceIdentifier": "app-db-writer", "IsClusterWriter": True},
-                                              {"DBInstanceIdentifier": "app-db-reader", "IsClusterWriter": False}]}]} if prof == "prod" else {"DBClusters": []})
+    out({"DBClusters": []})
 
 if (svc, op) == ("ec2", "describe-instance-types"):
     out({"InstanceTypes": [{"MemoryInfo": {"SizeInMiB": 16384}}]})
@@ -91,7 +101,13 @@ if (svc, op) == ("cloudwatch", "get-metric-data"):
         ms = q["MetricStat"]; name = ms["Metric"]["MetricName"]; per = ms["Period"]
         n = min(int((now - start).total_seconds() // per), 400)
         ts = [now - dt.timedelta(seconds=per * i) for i in range(n)]
-        base = {"CPUUtilization": 72, "FreeableMemory": 3.1 * 1024 ** 3, "DatabaseConnections": 140, "AuroraReplicaLag": 25,
+        if name == "FreeStorageSpace":  # ~3.5 % de crecimiento mensual del espacio usado, sobre 200 GB asignados
+            reader = any("reader" in d["Value"] for d in ms["Metric"]["Dimensions"])
+            t0 = dt.datetime(now.year, 4, 1, tzinfo=dt.timezone.utc)
+            used = lambda t: (96 if reader else 98) * 1.035 ** ((t - t0).days / 30.44) + random.uniform(-0.4, 0.4)
+            res.append({"Id": q["Id"], "Timestamps": [iso(t) for t in ts], "Values": [(200 - used(t)) * 1024 ** 3 for t in ts]})
+            continue
+        base = {"CPUUtilization": 72, "FreeableMemory": 3.1 * 1024 ** 3, "DatabaseConnections": 140, "AuroraReplicaLag": 25, "ReplicaLag": 0.4,
                 "AllowedRequests": 160000, "BlockedRequests": 0, "CountedRequests": 22000}.get(name, 50)
         if ms["Metric"]["Namespace"] == "AWS/WAFV2" and any(d["Name"] == "RuleGroup" or (d["Name"] == "Rule" and d["Value"] != "ALL") for d in ms["Metric"]["Dimensions"]):
             rule = [d["Value"] for d in ms["Metric"]["Dimensions"] if d["Name"] == "Rule"][0]
@@ -136,11 +152,15 @@ if (svc, op) == ("fms", "list-policies"):
     out({"PolicyList": [{"PolicyName": "baseline-waf", "PolicyId": "p-1", "SecurityServiceType": "WAFV2",
                          "ResourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer", "RemediationEnabled": True}]})
 if (svc, op) == ("fms", "get-policy"):
-    out({"Policy": {"IncludeMap": {"ACCOUNT": ["111111111111"]}, "ResourceTags": [{"Key": "Waf", "Value": "Si"}],
-                    "SecurityServicePolicyData": {"ManagedServiceData": json.dumps({"type": "WAFV2", "defaultAction": {"type": "ALLOW"}})}}})
+    mg = lambda n, ov=0: {"managedRuleGroupIdentifier": {"vendorName": "AWS", "managedRuleGroupName": n}, "overrideAction": {"type": "NONE"},
+                          "ruleGroupType": "ManagedRuleGroup", "ruleActionOverrides": [{"name": f"r{i}", "actionToUse": {"count": {}}} for i in range(ov)]}
+    out({"Policy": {"ResourceTags": [{"Key": "Waf", "Value": "Si"}],
+                    "SecurityServicePolicyData": {"ManagedServiceData": json.dumps({"type": "WAFV2", "defaultAction": {"type": "ALLOW"},
+                        "preProcessRuleGroups": [mg("AWSManagedRulesKnownBadInputsRuleSet", 12), mg("AWSManagedRulesCommonRuleSet", 22)],
+                        "postProcessRuleGroups": [mg("AWSManagedRulesAmazonIpReputationList", 3), mg("AWSManagedRulesSQLiRuleSet", 5)]})}}})
 if (svc, op) == ("fms", "list-compliance-status"):
-    out({"PolicyComplianceStatusList": [{"MemberAccount": a, "EvaluationResults": [{"ComplianceStatus": "COMPLIANT", "ViolatorCount": 0}]}
-                                        for a in ("555555555555", "222222222222", "111111111111")]})
+    out({"PolicyComplianceStatusList": [{"MemberAccount": a, "EvaluationResults": [{"ComplianceStatus": c, "ViolatorCount": v}]}
+                                        for a, c, v in (("555555555555", "NON_COMPLIANT", 2), ("222222222222", "COMPLIANT", 0), ("111111111111", "COMPLIANT", 0))]})
 
 if (svc, op) == ("securityhub", "get-findings"):
     if prof not in ("prod", "dev"): out([])

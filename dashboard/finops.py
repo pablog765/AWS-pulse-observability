@@ -7,6 +7,7 @@ margen del reseller, soporte, IVA). Todo precio lleva su fuente para poder audit
 from __future__ import annotations
 
 import csv
+import math
 import io
 import re
 from pathlib import Path
@@ -41,6 +42,7 @@ SRC = {
     "kms": "https://aws.amazon.com/kms/pricing/",
     "sm": "https://aws.amazon.com/secrets-manager/pricing/",
     "waf": "https://aws.amazon.com/waf/pricing/",
+    "rds_aurora": "https://aws.amazon.com/rds/aurora/pricing/",
     "fms": "https://aws.amazon.com/firewall-manager/pricing/",
     "nfw": "https://aws.amazon.com/network-firewall/pricing/",
     "shield": "https://aws.amazon.com/shield/pricing/",
@@ -57,24 +59,31 @@ EC2 = {
     "t3.large": (0.0832, 2), "t3.xlarge": (0.1664, 4), "t3.2xlarge": (0.3328, 8),
     "t3a.nano": (0.0047, 2), "t3a.micro": (0.0094, 2), "t3a.small": (0.0188, 2), "t3a.medium": (0.0376, 2),
     "t3a.large": (0.0752, 2), "t3a.xlarge": (0.1504, 4), "t3a.2xlarge": (0.3008, 8),
-    "m5.large": (0.096, 2), "m5.xlarge": (0.192, 4), "m5.2xlarge": (0.384, 8),
-    "m5a.large": (0.086, 2), "m5a.xlarge": (0.172, 4), "m5a.2xlarge": (0.344, 8),
+    "m5.large": (0.096, 2), "m5.xlarge": (0.192, 4), "m5.2xlarge": (0.384, 8), "m5.4xlarge": (0.768, 16),
+    "m5a.large": (0.086, 2), "m5a.xlarge": (0.172, 4), "m5a.2xlarge": (0.344, 8), "m5a.4xlarge": (0.688, 16),
     "m6a.large": (0.0864, 2), "m6a.xlarge": (0.1728, 4), "m6a.2xlarge": (0.3456, 8), "m6a.4xlarge": (0.6912, 16),
-    "m6i.large": (0.096, 2), "m6i.xlarge": (0.192, 4), "m6i.2xlarge": (0.384, 8),
-    "r6a.large": (0.1134, 2), "r6a.xlarge": (0.2268, 4), "r6a.2xlarge": (0.4536, 8),
-    "c6a.large": (0.0765, 2), "c6a.xlarge": (0.153, 4), "c6a.2xlarge": (0.306, 8),
+    "m6a.8xlarge": (1.3824, 32),
+    "m6i.large": (0.096, 2), "m6i.xlarge": (0.192, 4), "m6i.2xlarge": (0.384, 8), "m6i.4xlarge": (0.768, 16),
+    "r6a.large": (0.1134, 2), "r6a.xlarge": (0.2268, 4), "r6a.2xlarge": (0.4536, 8), "r6a.4xlarge": (0.9072, 16),
+    "c6a.large": (0.0765, 2), "c6a.xlarge": (0.153, 4), "c6a.2xlarge": (0.306, 8), "c6a.4xlarge": (0.612, 16),
 }
+SIZES = ["nano", "micro", "small", "medium", "large", "xlarge", "2xlarge", "4xlarge", "8xlarge"]
 WIN_PER_VCPU = 0.046        # licencia Windows incluida, USD por vCPU-hora
 WIN_SPECIAL = {"t3.micro": 0.0196, "t3.nano": 0.0098, "t3a.micro": 0.0186}
 
-# RDS single-AZ USD/hora (Multi-AZ = x2)
-RDS = {
-    ("db.t3.micro", "mariadb"): 0.017, ("db.t3.small", "mariadb"): 0.034, ("db.t3.medium", "mariadb"): 0.068,
-    ("db.t3.large", "mariadb"): 0.136, ("db.m6g.large", "mariadb"): 0.152, ("db.m6g.xlarge", "mariadb"): 0.304,
-    ("db.t3.micro", "postgres"): 0.018, ("db.t3.small", "postgres"): 0.036, ("db.t3.medium", "postgres"): 0.072,
-    ("db.t3.large", "postgres"): 0.145, ("db.m6g.large", "postgres"): 0.159, ("db.m6g.xlarge", "postgres"): 0.318,
-    ("db.t3.medium", "mysql"): 0.068, ("db.m6g.large", "mysql"): 0.152, ("db.m6g.xlarge", "mysql"): 0.304,
-}
+# RDS single-AZ USD/hora (Multi-AZ = x2). MariaDB y MySQL tienen el mismo precio.
+_MY = {"db.t3.micro": 0.017, "db.t3.small": 0.034, "db.t3.medium": 0.068, "db.t3.large": 0.136, "db.t3.xlarge": 0.272,
+       "db.t3.2xlarge": 0.544, "db.m6g.large": 0.152, "db.m6g.xlarge": 0.304, "db.m6g.2xlarge": 0.608, "db.m6g.4xlarge": 1.216,
+       "db.r6g.large": 0.225, "db.r6g.xlarge": 0.45, "db.r6g.2xlarge": 0.90, "db.r6g.4xlarge": 1.80}
+_PG = {"db.t3.micro": 0.018, "db.t3.small": 0.036, "db.t3.medium": 0.072, "db.t3.large": 0.145, "db.t3.xlarge": 0.29,
+       "db.t3.2xlarge": 0.579, "db.m6g.large": 0.159, "db.m6g.xlarge": 0.318, "db.m6g.2xlarge": 0.636, "db.m6g.4xlarge": 1.272,
+       "db.r6g.large": 0.24, "db.r6g.xlarge": 0.48, "db.r6g.2xlarge": 0.96, "db.r6g.4xlarge": 1.92}
+# Aurora Standard USD/hora por instancia (writer o reader); el almacenamiento es del clúster y no se duplica
+_AU = {"db.t3.medium": 0.082, "db.t3.large": 0.164, "db.r6g.large": 0.26, "db.r6g.xlarge": 0.52,
+       "db.r6g.2xlarge": 1.04, "db.r6g.4xlarge": 2.08, "db.r6g.8xlarge": 4.16}
+RDS = {**{(c, "mariadb"): v for c, v in _MY.items()}, **{(c, "mysql"): v for c, v in _MY.items()},
+       **{(c, "postgres"): v for c, v in _PG.items()},
+       **{(c, "aurora-mysql"): v for c, v in _AU.items()}, **{(c, "aurora-postgresql"): v for c, v in _AU.items()}}
 
 P = {  # precios unitarios simples
     "gp3": 0.08, "gp2": 0.10, "io1": 0.125, "io1_iops": 0.065, "st1": 0.045, "sc1": 0.015,
@@ -82,6 +91,7 @@ P = {  # precios unitarios simples
     "ipv4": 0.005, "nat_h": 0.045, "nat_gb": 0.045, "vpce_h": 0.01, "vpn_h": 0.05,
     "tgw_h": 0.05, "tgw_gb": 0.02, "cvpn_h": 0.10,
     "alb_h": 0.0225, "alb_lcu": 0.008, "nlb_h": 0.0225, "nlb_lcu": 0.006, "clb_h": 0.025,
+    "aurora_gb": 0.10, "aurora_io": 0.20,
     "rds_gp3": 0.115, "rds_gp2": 0.115, "rds_io1": 0.125, "rds_snap": 0.095,
     "fg_vcpu": 0.04048, "fg_gb": 0.004445,
     "ecr": 0.10, "s3": 0.023, "efs": 0.30,
@@ -163,7 +173,8 @@ def _ec2_price(itype: str, platform: str) -> float | None:
 def _item(r, precio, unidad_precio, costo, cat, fuente, tipo="Medido", nota=""):
     return {"perfil": r["perfil"], "cuenta": r["cuenta"], "servicio": r["servicio"], "recurso": r["recurso"],
             "detalle": r["detalle"], "cantidad": r["cantidad"], "precio_ref": precio, "unidad_precio": unidad_precio,
-            "costo_lista": round(costo, 2), "categoria": cat, "tipo": tipo, "fuente": SRC.get(fuente, fuente), "nota": nota}
+            "costo_lista": round(costo, 2), "categoria": cat, "tipo": tipo, "fuente": SRC.get(fuente, fuente), "nota": nota,
+            "src_row": r.name}
 
 
 def price_lines(inv: pd.DataFrame, asm: dict[str, dict]) -> pd.DataFrame:
@@ -223,11 +234,17 @@ def price_lines(inv: pd.DataFrame, asm: dict[str, dict]) -> pd.DataFrame:
             cls, eng = (det.split("|") + ["", ""])[:2]
             maz = "multiAZ=True" in det
             p = RDS.get((cls, eng))
-            src = {"mariadb": "rds_mariadb", "postgres": "rds_postgres"}.get(eng, "rds_mysql")
+            src = "rds_aurora" if eng.startswith("aurora") else {"mariadb": "rds_mariadb", "postgres": "rds_postgres"}.get(eng, "rds_mysql")
             if p is None:
                 add(None, "USD/h", 0, "database", src, "Sin precio", f"Agregar {cls}/{eng} al catálogo")
             else:
                 add(p * (2 if maz else 1), "USD/h" + (" (Multi-AZ x2)" if maz else ""), p * (2 if maz else 1) * H * q, "database", src)
+        elif s == "RDS" and rec == "almacenamiento" and det.startswith("aurora"):
+            add(P["aurora_gb"], "USD/GB-mes (clúster)", P["aurora_gb"] * q, "storage", "rds_aurora",
+                nota="Aurora: 6 copias en 3 AZ incluidas, no se duplica por réplica")
+        elif s == "RDS" and rec == "aurora I/O":
+            add(P["aurora_io"], "USD/millón de I/O", P["aurora_io"] * q, "storage", "rds_aurora", "Estimado",
+                f"{q:g} M de operaciones de E/S al mes supuesto")
         elif s == "RDS" and rec == "almacenamiento":
             st = det.split("|")[0]
             maz = "multiAZ=True" in det
@@ -422,3 +439,190 @@ def opportunities(inv: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
         add(s["perfil"], f"Revisar {int(s['cantidad'])} instancia(s) detenida(s)",
             "No pagan cómputo pero sí sus discos. Si ya no se usan, snapshot y eliminar.", 0, "Bajo")
     return pd.DataFrame(ops).sort_values("ahorro_mes", ascending=False) if ops else pd.DataFrame()
+
+
+# ------------------------------------------------------------------ simulación de una cuenta nueva
+SCHEDULES = {  # fracción de horas al mes que el cómputo queda encendido
+    "24x7 (siempre encendido)": 1.0,
+    "Extendido 07:00-22:00 L-S": 15 * 6 / 168,
+    "Oficina 07:00-19:00 L-V": 12 * 5 / 168,
+}
+ORG_SERVICES = ["FirewallManager", "ShieldAdvanced", "NetworkFirewall"]  # se pagan una vez por organización
+# Para la tabla de servicios por cuenta: qué es cada servicio en pocas palabras
+SERVICE_INFO = {
+    "EC2": "Servidores virtuales", "EBS": "Discos de los servidores y snapshots", "RDS": "Bases de datos administradas",
+    "ECS": "Contenedores (Fargate)", "ELB": "Balanceadores de carga", "VPC": "Red: IPs públicas, NAT, endpoints",
+    "VPN": "Túneles a oficinas o socios", "TGW": "Transit Gateway: une VPC y cuentas", "WAF": "Firewall web (capa 7)",
+    "FirewallManager": "Políticas de firewall centralizadas", "NetworkFirewall": "Firewall de red administrado",
+    "ShieldAdvanced": "Protección DDoS avanzada", "GuardDuty": "Detección de amenazas", "SecurityHub": "Postura de seguridad",
+    "Config": "Registro de cambios de configuración", "Inspector": "Escaneo de vulnerabilidades", "KMS": "Claves de cifrado",
+    "SecretsManager": "Contraseñas y secretos", "CloudWatch": "Logs, métricas y alarmas", "CloudTrail": "Auditoría de API",
+    "S3": "Almacenamiento de objetos", "EFS": "Disco compartido NFS", "ECR": "Imágenes de contenedores",
+    "Lambda": "Funciones sin servidor", "APIGW": "API Gateway", "Route53": "DNS", "DataTransfer": "Transferencia de datos",
+    "ControlTower": "Cuentas de gobierno de la organización", "Backup": "Copias de seguridad", "DynamoDB": "Base NoSQL",
+}
+FARGATE_CPU = [256, 512, 1024, 2048, 4096, 8192, 16384]
+AURORA_FAMILY = {"db.t3": "db.t3", "db.m6g": "db.r6g", "db.r6g": "db.r6g"}
+
+
+FALLBACK = {"m5": "t3", "m6i": "t3", "m5a": "t3a", "m6a": "t3a", "r6a": "t3a", "c6a": "t3a",
+            "db.m6g": "db.t3", "db.r6g": "db.t3"}  # al bajar del tamaño mínimo de la familia
+
+
+def _ladder(pre: str, catalog) -> list[str]:
+    return [f"{pre}.{z}" for z in SIZES if f"{pre}.{z}" in catalog]
+
+
+def _step_size(cls: str, step: int, catalog) -> str:
+    """Sube o baja `step` tamaños dentro de la misma familia (m6a.xlarge +1 -> m6a.2xlarge). Si baja del tamaño
+    mínimo pasa a la familia burstable equivalente (m6a.large -1 -> t3a.medium). Se detiene en los extremos."""
+    pre, _, size = cls.rpartition(".")
+    ladder = _ladder(pre, catalog)
+    if step == 0 or cls not in ladder:
+        return cls
+    i = ladder.index(cls) + step
+    if i < 0 and FALLBACK.get(pre):
+        fl = _ladder(FALLBACK[pre], catalog)
+        anchor = fl.index(f"{FALLBACK[pre]}.large") if f"{FALLBACK[pre]}.large" in fl else len(fl) - 1
+        return fl[max(0, anchor + i)] if fl else cls
+    return ladder[max(0, min(len(ladder) - 1, i))]
+
+
+CAPACITY_LEVELS = [25, 50, 100, 200, 400]  # % de la cuenta origen; cada duplicación = un tamaño de instancia
+
+
+def capacity_params(pct: int) -> dict:
+    """Traduce '% de capacidad respecto al origen' a cambios concretos por servicio."""
+    f = pct / 100
+    step = int(round(math.log2(f)))
+    return dict(ec2_step=step, ec2_mult=1.0, ecs_size=min(4.0, max(0.25, f)), ecs_mult=1.0, rds_step=step,
+                storage_mult=min(3.0, max(0.25, f)),
+                rds_maz="Single-AZ" if pct < 100 else "Multi-AZ" if pct > 100 else "Igual que origen")
+
+
+def _to_aurora(cls: str) -> str:
+    pre, _, size = cls.rpartition(".")
+    fam = AURORA_FAMILY.get(pre, "db.r6g")
+    if fam == "db.t3":
+        return "db.t3.large" if size in ("large", "xlarge", "2xlarge") else "db.t3.medium"
+    return f"{fam}.{size}" if f"{fam}.{size}" in _AU else "db.r6g.large"
+
+
+def simulate_account(base: pd.DataFrame, prm: dict, name: str = "ambiente QA") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Crea el inventario de una cuenta nueva a partir de otra (réplica) con los cambios de `prm`.
+
+    prm: ec2_step, ec2_mult, ecs_mult, ecs_size, rds_step, rds_motor ("Igual que origen" | "Aurora"),
+         rds_maz ("Igual que origen" | "Multi-AZ" | "Single-AZ"), aurora_readers, aurora_io,
+         storage_mult, horario (fracción 0-1), excluir (lista de servicios).
+    Devuelve (inventario simulado, tabla de cambios origen -> simulado)."""
+    rows, chg = [], []
+    frac = prm.get("horario", 1.0)
+    aurora = prm.get("rds_motor") == "Aurora"
+    log = lambda s, r, a, b: chg.append({"servicio": s, "recurso": r, "origen": a, "simulado": b})
+    for _, r in base.iterrows():
+        r = r.copy()
+        s, rec, det, q = r["servicio"], r["recurso"], str(r["detalle"]), float(r["cantidad"])
+        if s in prm.get("excluir", []):
+            log(s, rec, f"{q:g}", "no se replica")
+            continue
+        if s == "EC2" and rec == "instancia":
+            itype, plat, nm = (det.split("|") + ["", "", ""])[:3]
+            new = _step_size(itype, prm.get("ec2_step", 0), EC2)
+            n = max(1 if q >= 1 else 0, math.ceil(q * prm.get("ec2_mult", 1.0)))
+            r["detalle"] = f"{new}|{plat}|QA-{nm}"
+            r["cantidad"] = n * frac
+            tope = " (límite del catálogo)" if new == itype and prm.get("ec2_step", 0) != 0 else ""
+            log(s, nm, f"{q:g} × {itype}", f"{n} × {new}{tope}")
+        elif s == "ECS" and rec == "servicio" and "FARGATE" in det:
+            m = re.search(r"cpu,mem=(\d+),(\d+)", det)
+            cpu, mem = (int(m.group(1)), int(m.group(2))) if m else (256, 512)
+            f = prm.get("ecs_size", 1.0)
+            ncpu = min((c for c in FARGATE_CPU if c >= cpu * f), default=FARGATE_CPU[-1])
+            nmem = int(min(mem * ncpu / cpu, 122880))
+            n = max(1, math.ceil(q * prm.get("ecs_mult", 1.0)))
+            r["detalle"] = re.sub(r"cpu,mem=\d+,\d+", f"cpu,mem={ncpu},{nmem}", det) if m else f"{det}|cpu,mem={ncpu},{nmem}"
+            r["cantidad"] = n * frac
+            log(s, det.split("|")[0], f"{q:g} tareas × {cpu / 1024:g} vCPU/{mem / 1024:g} GB",
+                f"{n} tareas × {ncpu / 1024:g} vCPU/{nmem / 1024:g} GB")
+        elif s == "RDS" and rec == "instancia":
+            cls, eng, *rest = det.split("|") + [""]
+            maz_src = "multiAZ=True" in det
+            nm = next((x for x in rest if x and not x.startswith("multiAZ")), "db")
+            maz = {"Multi-AZ": True, "Single-AZ": False}.get(prm.get("rds_maz"), maz_src)
+            if aurora:
+                ncls = _step_size(_to_aurora(cls), prm.get("rds_step", 0), _AU)
+                neng = "aurora-postgresql" if "postgres" in eng else "aurora-mysql"
+                role = "reader" if re.search(r"reader|replica", nm, re.I) else "writer"
+                n_inst = 1 + (1 if maz and role == "writer" else 0)
+                r["detalle"] = f"{ncls}|{neng}|multiAZ=False|qa-{nm}"
+                r["cantidad"] = n_inst * q * frac
+                log(s, nm, f"{cls} {eng}{' Multi-AZ' if maz_src else ''}",
+                    f"{n_inst} × {ncls} {neng} ({'writer + reader' if n_inst == 2 else role})")
+            else:
+                ncls = _step_size(cls, prm.get("rds_step", 0), _PG if "postgres" in eng else _MY)
+                r["detalle"] = f"{ncls}|{eng}|multiAZ={maz}|qa-{nm}"
+                r["cantidad"] = q * frac
+                log(s, nm, f"{cls}{' Multi-AZ' if maz_src else ''}", f"{ncls}{' Multi-AZ' if maz else ''}")
+        elif s == "RDS" and rec == "almacenamiento":
+            st, *rest = det.split("|")
+            nm = rest[-1] if rest else "db"
+            gb = q * prm.get("storage_mult", 1.0)
+            if aurora:
+                if re.search(r"reader|replica", nm, re.I):
+                    log(s, f"almacenamiento {nm}", f"{q:g} GB", "compartido con el writer (Aurora)")
+                    continue
+                r["detalle"] = f"aurora|qa-{nm}"
+            else:
+                maz = {"Multi-AZ": True, "Single-AZ": False}.get(prm.get("rds_maz"), "multiAZ=True" in det)
+                r["detalle"] = re.sub(r"multiAZ=\w+", f"multiAZ={maz}", det)
+            r["cantidad"] = gb
+        elif (s == "EBS" and rec == "volumen") or s in ("S3", "EFS"):
+            r["cantidad"] = q * prm.get("storage_mult", 1.0)
+        rows.append(r)
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out, pd.DataFrame(chg)
+    if aurora and (out["servicio"] == "RDS").any():
+        tmpl = out[out["servicio"] == "RDS"].iloc[0].copy()
+        extra = int(prm.get("aurora_readers", 0))
+        if extra:
+            w = out[(out["servicio"] == "RDS") & (out["recurso"] == "instancia")]
+            if not w.empty:
+                rd = w.iloc[0].copy()
+                rd["detalle"] = rd["detalle"].rsplit("|", 1)[0] + "|qa-readers-adicionales"
+                rd["cantidad"] = extra * frac
+                rows.append(rd)
+                log("RDS", "réplicas Aurora", "-", f"+{extra} reader(s) {rd['detalle'].split('|')[0]}")
+        tmpl["recurso"], tmpl["detalle"], tmpl["cantidad"], tmpl["unidad"] = "aurora I/O", "millones de E/S", prm.get("aurora_io", 0), "M-IO"
+        rows.append(tmpl)
+        out = pd.DataFrame(rows)
+    out["perfil"] = name
+    out["cuenta"] = "(nueva)"
+    return out.reset_index(drop=True), pd.DataFrame(chg)
+
+
+COMPONENT_KINDS = ["Servidor EC2", "Base de datos RDS / Aurora", "Servicio ECS Fargate", "Balanceador ALB", "Balanceador NLB",
+                   "NAT Gateway", "VPN Site-to-Site", "Volumen EBS gp3 (GB)", "Bucket S3 (GB)", "Secretos (Secrets Manager)",
+                   "Web ACL de WAF"]
+
+
+def new_component(kind: str, name: str, qty: float, **o) -> list[dict]:
+    """Filas de inventario para un componente agregado a mano en la simulación (mismo formato que el TSV)."""
+    row = lambda s, r, d, q, u="": {"servicio": s, "recurso": r, "detalle": d, "cantidad": float(q), "unidad": u}
+    if kind == "Servidor EC2":
+        return [row("EC2", "instancia", f"{o['itype']}|{o['plat']}|{name}", qty, "instancia-24x7")]
+    if kind == "Base de datos RDS / Aurora":
+        eng, maz, gb = o["eng"], o.get("maz", False), o.get("gb", 20)
+        inst = row("RDS", "instancia", f"{o['cls']}|{eng}|multiAZ={maz and not eng.startswith('aurora')}|{name}", qty, "instancia-24x7")
+        if eng.startswith("aurora"):
+            return [inst, row("RDS", "almacenamiento", f"aurora|{name}", gb, "GB-mes")]
+        return [inst, row("RDS", "almacenamiento", f"gp3|iops=3000|multiAZ={maz}|{name}", gb * qty, "GB-mes")]
+    if kind == "Servicio ECS Fargate":
+        return [row("ECS", "servicio", f"{name}|FARGATE|cpu,mem={int(o['vcpu'] * 1024)},{int(o['gb'] * 1024)}", qty, "tarea-24x7")]
+    simple = {"Balanceador ALB": ("ELB", "application", "load balancer"), "Balanceador NLB": ("ELB", "network", "load balancer"),
+              "NAT Gateway": ("VPC", "NAT Gateway", name), "VPN Site-to-Site": ("VPN", "Site-to-Site VPN", "conexión"),
+              "Volumen EBS gp3 (GB)": ("EBS", "volumen", "gp3|iops=3000|tput=125|in-use"),
+              "Bucket S3 (GB)": ("S3", "buckets", name), "Secretos (Secrets Manager)": ("SecretsManager", "secretos", name),
+              "Web ACL de WAF": ("WAF", "web ACLs", "regional=1")}
+    s, r, d = simple[kind]
+    return [row(s, r, d, qty)]
