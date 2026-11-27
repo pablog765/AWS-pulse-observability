@@ -24,7 +24,9 @@ st.set_page_config(page_title="AWS Pulse" + (f" · {ORG}" if ORG else ""), layou
 
 # Paleta "claro corporativo": fondo claro tipo consola AWS; estados en tonos oscuros para buen contraste sobre blanco
 AZUL, ROJO, NARANJA, AMARILLO, VERDE, GRIS = "#2563EB", "#DC2626", "#EC7211", "#CA8A04", "#16A34A", "#6B7280"
-SEV_COLOR = {"CRITICAL": ROJO, "HIGH": NARANJA, "MEDIUM": AMARILLO, "LOW": VERDE}
+# Severidades: tonos y luminosidad bien distintos (rojo oscuro / ámbar / gris azulado) para distinguirlos incluso con daltonismo
+SEV_COLOR = {"CRITICAL": "#B91C1C", "HIGH": "#F59E0B", "MEDIUM": "#94A3B8", "LOW": "#CBD5E1"}
+SEV_ES = {"CRITICAL": "Crítica", "HIGH": "Alta", "MEDIUM": "Media", "LOW": "Baja"}
 # Perfiles por defecto: variable AWS_PULSE_PROFILES ("prod dev network security") o los de ~/.aws/config
 DEFAULT_PROFILES = os.environ.get("AWS_PULSE_PROFILES", "").split()
 TTL = 300  # segundos que se reutilizan los datos antes de volver a consultar AWS
@@ -37,6 +39,9 @@ st.markdown("""
 h1,h2,h3{font-family:"Space Grotesk",Inter,sans-serif;letter-spacing:-.3px}
 .small{font-size:0.85rem;opacity:.85}
 .vcard{border:1px solid #D5DBE5;border-left:5px solid;border-radius:10px;padding:10px 16px;margin-bottom:8px;color:#1F2937}
+.sevcard{background:#FFFFFF;border:1px solid #D5DBE5;border-left:6px solid;border-radius:10px;padding:10px 16px;margin-bottom:8px}
+.sevlbl{font-size:.8rem;font-weight:800;letter-spacing:.6px;color:#6B7280}
+.sevnum{font-size:1.9rem;font-weight:700;color:#1F2937;line-height:1.2}
 .badge-lg{font-size:1.05rem;padding:5px 16px;border-radius:8px;letter-spacing:.5px}
 .dbhead{border:1px solid;border-left:6px solid;border-radius:10px;padding:10px 14px;margin:6px 0 10px;font-size:1.05rem}
 .alerta{color:#1F2937;font-size:1.2rem;font-weight:600;background:#FFFFFF;border:1px solid #D5DBE5;border-left:6px solid;
@@ -103,6 +108,10 @@ def c_nfw(p): return A.network_firewalls(p)
 @st.cache_data(ttl=TTL, show_spinner=False)
 def c_fms(p): return A.fms_policies(p)
 @st.cache_data(ttl=TTL, show_spinner=False)
+def c_config(p): return A.config_status(p)
+@st.cache_data(ttl=TTL, show_spinner=False)
+def c_config_find(p, days): return A.config_findings(p, days)
+@st.cache_data(ttl=TTL, show_spinner=False)
 def c_sh(p, n): return A.securityhub_findings(p, n)
 @st.cache_data(ttl=TTL, show_spinner=False)
 def c_ct(p, days): return A.cloudtrail_changes(p, days)
@@ -148,7 +157,7 @@ with st.sidebar:
     st.markdown(f"<div class='brand'>AWS <span>Pulse</span></div>"
                 f"<div class='brand-sub'>{ORG + ' · ' if ORG else ''}solo lectura</div>", unsafe_allow_html=True)
     menu = ["Sesión", "Resumen", "Salud y VPN", "Bases de datos (RDS)", "WAF y firewalls",
-            "Security Hub", "Cambios recientes", "FinOps"]
+            "Security Hub", "AWS Config", "Cambios recientes", "FinOps"]
     if not IS_LOCAL:  # quien entra por la red solo consulta; el login SSO se hace en el equipo anfitrión
         menu.remove("Sesión")
     page = st.radio("Módulo", menu, index=menu.index("Resumen"), label_visibility="collapsed")
@@ -817,8 +826,9 @@ aplicaciones públicas responde a **PCI DSS v4.0 req. 6.4.2** y **NIST 800-53 SC
 # =========================================================== SECURITY HUB
 def page_sh():
     st.header("Security Hub")
-    n = st.select_slider("Hallazgos a leer por cuenta", [500, 1000, 1500, 3000], value=1500,
-                         help="Más hallazgos tardan más en descargarse.")
+    n = st.select_slider("Máximo de hallazgos a descargar por cuenta", [500, 1000, 1500, 3000, 5000], value=1500,
+                         help="Security Hub no da un conteo total: se descargan hallazgos hasta este tope (activos, nuevos, "
+                              "severidad media o mayor). Más alto = más completo pero más lento.")
     with st.spinner("Descargando hallazgos (puede tardar 1-2 minutos la primera vez)…"):
         res, errs = per_account(c_sh, profiles, n)
         ec2, _ = per_account(c_ec2, profiles)
@@ -828,6 +838,12 @@ def page_sh():
         st.info("Sin hallazgos activos o Security Hub no habilitado en las cuentas seleccionadas.")
         return
     df = pd.concat(frames, ignore_index=True)
+    topados = [p for p, d in res.items() if d is not None and len(d) >= n]
+    if topados:
+        st.warning(f"{', '.join(topados)}: se alcanzó el tope de {n:,} hallazgos, hay más sin descargar y los conteos "
+                   "de esas cuentas son un mínimo. Sube el máximo para verlos todos.")
+    else:
+        st.caption(f"Se descargaron todos los hallazgos activos (ninguna cuenta llegó al tope de {n:,}).")
     names = {i["id"]: i["nombre"] for i in flat(ec2)}
     df["recurso_corto"] = df["recurso_corto"].map(lambda r: names.get(r, r))
 
@@ -838,14 +854,20 @@ def page_sh():
     d = df[df["cuenta"].isin(cuentas) & df["sev"].isin(sev) & df["categoria"].isin(cat)]
 
     k = st.columns(4)
-    for col, s in zip(k, ["CRITICAL", "HIGH", "MEDIUM"]):
-        col.metric(s.title(), int((df[df["cuenta"].isin(cuentas)]["sev"] == s).sum()), border=True)
-    k[3].metric("En la vista", len(d), border=True)
+    for col, sv in zip(k, ["CRITICAL", "HIGH", "MEDIUM"]):
+        n_s = int((df[df["cuenta"].isin(cuentas)]["sev"] == sv).sum())
+        col.markdown(f"<div class='sevcard' style='border-left-color:{SEV_COLOR[sv]}'><div class='sevlbl' style='color:{'#64748B' if sv == 'MEDIUM' else SEV_COLOR[sv]}'>"
+                     f"{SEV_ES[sv].upper()}</div><div class='sevnum'>{n_s:,}</div></div>", unsafe_allow_html=True)
+    k[3].markdown(f"<div class='sevcard' style='border-left-color:{GRIS}'><div class='sevlbl'>EN LA VISTA (FILTROS)</div>"
+                  f"<div class='sevnum'>{len(d):,}</div></div>", unsafe_allow_html=True)
 
     g = df[df["cuenta"].isin(cuentas)].groupby(["cuenta", "sev"]).size().reset_index(name="hallazgos")
-    fig = px.bar(g, x="cuenta", y="hallazgos", color="sev", color_discrete_map=SEV_COLOR, height=280,
-                 category_orders={"sev": ["CRITICAL", "HIGH", "MEDIUM"]}, title="Hallazgos por cuenta y severidad")
-    fig.update_layout(margin=dict(l=0, r=0, t=36, b=0), legend_title_text="", title_font_size=13)
+    g["Severidad"] = g["sev"].map(SEV_ES)
+    fig = px.bar(g, x="cuenta", y="hallazgos", color="Severidad", barmode="group", text="hallazgos", height=320,
+                 color_discrete_map={SEV_ES[k_]: v for k_, v in SEV_COLOR.items()},
+                 category_orders={"Severidad": ["Crítica", "Alta", "Media"]}, title="Hallazgos por cuenta y severidad")
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    fig.update_layout(margin=dict(l=0, r=0, t=50, b=0), legend_title_text="", title_font_size=13, xaxis_title="", yaxis_title="Hallazgos")
     st.plotly_chart(fig, width="stretch")
 
     t1, t2, t3, t4 = st.tabs(["Configuración insegura", "Parches de Windows", "Vulnerabilidades por paquete", "Todos"])
@@ -875,6 +897,128 @@ def page_sh():
                      column_config={"remediacion": st.column_config.LinkColumn("Cómo corregir", display_text="Ver guía"),
                                     "actualizado": st.column_config.DatetimeColumn("Actualizado", format="YYYY-MM-DD")})
         st.download_button("Descargar CSV", d.to_csv(index=False).encode("utf-8"), "securityhub.csv", "text/csv")
+
+
+# ============================================================== AWS CONFIG
+def page_config():
+    st.header("AWS Config")
+    st.caption("Config registra la configuración de cada recurso y sus cambios. Es la base de Security Hub, Control Tower y "
+               "Firewall Manager: sus reglas se evalúan sobre este inventario.")
+    with st.spinner("Consultando AWS Config…"):
+        res, errs = per_account(c_config, profiles)
+    show_errors(errs)
+    est = [v for v in res.values() if v]
+    if not est:
+        st.info("Sin datos de AWS Config en las cuentas seleccionadas.")
+        return
+
+    # ---------- estado por cuenta
+    st.subheader("Estado por cuenta")
+    cols = st.columns(min(len(est), 4))
+    for col, e in zip(cols * 4, est):
+        ok = e["grabando"] and e["ultimo_estado"] == "SUCCESS"
+        c = VERDE if ok else ROJO
+        orig = pd.Series([r["origen"] for r in e["reglas"]]).value_counts()
+        col.markdown(f"<div class='sevcard' style='border-left-color:{c}'><div class='sevlbl' style='color:{c}'>"
+                     f"{'✔ GRABANDO' if ok else '✖ NO GRABA'}</div><div class='sevnum'>{e['cuenta']}</div>"
+                     f"<div class='small'>{e['recursos']:,} recursos · {len(e['reglas'])} reglas · grabador: {e['grabador']}<br>"
+                     f"{' · '.join(f'{k}: {v}' for k, v in orig.items()) or 'sin reglas'}</div></div>", unsafe_allow_html=True)
+    with st.expander("¿Cómo leer esta página?"):
+        st.markdown("""
+- **Grabando:** Config está registrando los cambios de configuración. Si una cuenta no graba, Security Hub y Control Tower quedan ciegos.
+- **Reglas de Security Hub:** las crea Security Hub (son *service-linked*) y su resultado **se ve en la página Security Hub**, no aquí.
+- **Reglas con evaluación propia:** las de Firewall Manager, Control Tower, conformance packs o creadas por ustedes: su cumplimiento aparece abajo.
+- **Consultas rápidas:** preguntas al inventario de Config (SQL de solo lectura) para encontrar riesgos o desperdicio sin entrar a la consola.
+""")
+
+    # ---------- inventario
+    st.subheader("Inventario de recursos")
+    inv = pd.DataFrame([x for e in est for x in e["por_tipo"]])
+    if not inv.empty:
+        inv["tipo_corto"] = inv["tipo"].str.replace("AWS::", "", regex=False)
+        top = inv.groupby("tipo_corto")["cantidad"].sum().sort_values(ascending=False).head(15).index.tolist()
+        iv = inv[inv["tipo_corto"].isin(top)]
+        fig = px.bar(iv, y="tipo_corto", x="cantidad", color="cuenta", orientation="h", height=120 + 26 * len(top),
+                     category_orders={"tipo_corto": top}, title="Los 15 tipos de recurso más numerosos",
+                     color_discrete_sequence=[AZUL, NARANJA, VERDE, "#7C3AED", GRIS])
+        fig.update_layout(margin=dict(l=0, r=0, t=40, b=0), title_font_size=13, legend_title_text="", yaxis_title="", xaxis_title="Recursos")
+        st.plotly_chart(fig, width="stretch")
+        with st.expander("Ver todos los tipos de recurso"):
+            piv = inv.pivot_table(index="tipo", columns="cuenta", values="cantidad", aggfunc="sum", fill_value=0)
+            piv["Total"] = piv.sum(axis=1)
+            st.dataframe(piv.sort_values("Total", ascending=False), width="stretch")
+
+    # ---------- reglas con evaluación propia
+    st.subheader("Reglas con evaluación propia")
+    reglas = pd.DataFrame([r for e in est for r in e["reglas"]])
+    propias = reglas[reglas["origen"] != "Security Hub"] if not reglas.empty else reglas
+    if propias.empty:
+        st.caption("Solo hay reglas de Security Hub: revisa su resultado en la página Security Hub.")
+    else:
+        mapa = {"COMPLIANT": "✅ Cumple", "NON_COMPLIANT": "❌ No cumple", "NOT_APPLICABLE": "No aplica", "INSUFFICIENT_DATA": "Sin datos"}
+        pr = propias.assign(estado=propias["estado"].map(mapa).fillna(propias["estado"]))
+        n_bad = (propias["estado"] == "NON_COMPLIANT").sum()
+        (st.error if n_bad else st.success)(f"{n_bad} regla(s) no cumplen de {len(propias)} con evaluación propia.")
+        st.dataframe(pr[["cuenta", "origen", "estado", "control_aws", "recursos_no_cumplen", "regla", "descripcion"]]
+                     .sort_values("estado"), hide_index=True, width="stretch",
+                     column_config={"cuenta": "Cuenta", "origen": "Origen", "estado": "Estado", "control_aws": "Regla AWS",
+                                    "recursos_no_cumplen": "Recursos que no cumplen", "regla": "Nombre", "descripcion": "Descripción"})
+    if not reglas.empty:
+        n_sh = (reglas["origen"] == "Security Hub").sum()
+        if n_sh:
+            st.caption(f"Además hay {n_sh:,} reglas creadas por Security Hub (su resultado está en la página Security Hub).")
+
+    # ---------- consultas rápidas
+    st.subheader("Consultas rápidas al inventario")
+    days = st.select_slider("Recursos cambiados en los últimos", [1, 3, 7, 14, 30], value=7, format_func=lambda d: f"{d} días")
+    with st.spinner("Consultando el inventario…"):
+        fr, errs2 = per_account(c_config_find, profiles, days)
+        ec2, _ = per_account(c_ec2, profiles)
+    names = {i["id"]: i["nombre"] for i in flat(ec2)}
+    sueltos = pd.DataFrame([x for v in fr.values() if v for x in v["sueltos"]])
+    cifr = pd.DataFrame([x for v in fr.values() if v for x in v["sin_cifrar"]])
+    camb = pd.DataFrame([x for v in fr.values() if v for x in v["cambios"]])
+    k = st.columns(3)
+    gb_s = sueltos["gb"].sum() if not sueltos.empty else 0
+    k[0].markdown(f"<div class='sevcard' style='border-left-color:{NARANJA if len(sueltos) else VERDE}'><div class='sevlbl'>DISCOS EBS SIN USAR</div>"
+                  f"<div class='sevnum'>{len(sueltos)}</div><div class='small'>{gb_s:,.0f} GB · ~{usd(gb_s * F.P['gp3'])}/mes desperdiciados</div></div>",
+                  unsafe_allow_html=True)
+    k[1].markdown(f"<div class='sevcard' style='border-left-color:{ROJO if len(cifr) else VERDE}'><div class='sevlbl'>DISCOS EBS SIN CIFRAR</div>"
+                  f"<div class='sevnum'>{len(cifr)}</div><div class='small'>{(cifr['gb'].sum() if not cifr.empty else 0):,.0f} GB de datos sin cifrado en reposo</div></div>",
+                  unsafe_allow_html=True)
+    k[2].markdown(f"<div class='sevcard' style='border-left-color:{AZUL}'><div class='sevlbl'>RECURSOS CAMBIADOS ({days} D)</div>"
+                  f"<div class='sevnum'>{len(camb)}</div><div class='small'>según la última captura de Config</div></div>", unsafe_allow_html=True)
+    t1, t2, t3 = st.tabs(["Cambios recientes", "Discos sin cifrar", "Discos sin usar"])
+    with t1:
+        if camb.empty:
+            st.caption("Sin cambios en el periodo.")
+        else:
+            camb["tipo_corto"] = camb["tipo"].str.replace("AWS::", "", regex=False)
+            camb["dia"] = pd.to_datetime(camb["cuando"]).dt.date
+            top = camb["tipo_corto"].value_counts().head(8).index
+            fig = px.bar(camb[camb["tipo_corto"].isin(top)].groupby(["dia", "tipo_corto"]).size().reset_index(name="n"),
+                         x="dia", y="n", color="tipo_corto", height=280, title="Cambios por día y tipo de recurso",
+                         color_discrete_sequence=px.colors.qualitative.Safe)
+            fig.update_layout(margin=dict(l=0, r=0, t=40, b=0), title_font_size=13, legend_title_text="", xaxis_title="", yaxis_title="Recursos")
+            st.plotly_chart(fig, width="stretch")
+            st.dataframe(camb[["cuenta", "cuando", "tipo_corto", "recurso", "estado"]], hide_index=True, width="stretch",
+                         column_config={"cuando": st.column_config.DatetimeColumn("Cuándo (hora local)", format="YYYY-MM-DD HH:mm"),
+                                        "tipo_corto": "Tipo", "recurso": "Recurso", "estado": "Estado del registro", "cuenta": "Cuenta"})
+            st.caption("Estado del registro: OK = cambió · ResourceDiscovered = recurso nuevo · ResourceDeleted = eliminado. "
+                       "Quién hizo el cambio está en la página Cambios recientes (CloudTrail).")
+    with t2:
+        if cifr.empty:
+            st.success("Todos los discos EBS están cifrados.")
+        else:
+            cifr["servidor"] = cifr["servidor"].map(lambda x: ", ".join(names.get(i.strip(), i.strip()) for i in str(x).split(",")))
+            st.dataframe(cifr, hide_index=True, width="stretch")
+            st.caption("Para cifrarlos: snapshot → copia cifrada → volumen nuevo. Activar «cifrado EBS por defecto» en la cuenta evita nuevos casos.")
+    with t3:
+        if sueltos.empty:
+            st.success("No hay discos EBS sin asociar.")
+        else:
+            st.dataframe(sueltos, hide_index=True, width="stretch")
+            st.caption("Siguen cobrándose aunque no estén conectados a un servidor. Snapshot y eliminar si ya no se usan.")
 
 
 # ================================================================ CAMBIOS
@@ -1203,11 +1347,12 @@ def page_finops_sim(inv, asm, k, allc, lines) -> dict | None:
                              help="Apagar QA fuera de oficina baja EC2, Fargate y RDS. Para estimar el techo deja 24x7.")
     motor = c[3].radio("Motor de base de datos", ["Igual que origen", "Aurora"], horizontal=True,
                        help="Aurora: el almacenamiento es del clúster (no se duplica por réplica) y se cobra E/S.")
-    pct = st.select_slider(f"Capacidad de {nombre} respecto a {base_p}", F.CAPACITY_LEVELS, value=25,
-                           format_func=lambda x: f"{x} %",
-                           help="Cada duplicación sube un tamaño de instancia: 25 % = dos tamaños menos, 200 % = uno más.")
+    pct = st.radio(f"Capacidad de {nombre} respecto a {base_p}", F.CAPACITY_LEVELS, index=0, horizontal=True,
+                   format_func=lambda x: f"{x} %", key=f"qa_capacidad_{base_p}",
+                   help="Haz clic en un porcentaje. Cada duplicación sube un tamaño de instancia: 25 % = dos tamaños menos, "
+                        "200 % = uno más. Fargate y el almacenamiento escalan en la misma proporción.")
     cp = F.capacity_params(pct)
-    st.caption(f"Con {pct} %: EC2 y RDS {cp['ec2_step']:+d} tamaño(s) · Fargate ×{cp['ecs_size']:g} vCPU/memoria por tarea · "
+    st.caption(f"Con {pct} %: EC2 y RDS {cp['ec2_step']:+d} tamaño(s) · Fargate ×{cp['ecs_size']:g} vCPU/memoria y ×{cp['ecs_mult']:g} tareas · "
                f"almacenamiento ×{cp['storage_mult']:g} · alta disponibilidad: {cp['rds_maz']}.")
 
     sk = f"qa_{base_p}_{pct}"
@@ -1221,7 +1366,7 @@ def page_finops_sim(inv, asm, k, allc, lines) -> dict | None:
         rds_step = col[2].slider("Base de datos: tamaño (pasos)", -3, 3, cp["rds_step"], key=sk + "r1")
         rds_maz = col[2].radio("Alta disponibilidad", ["Igual que origen", "Multi-AZ", "Single-AZ"],
                                index=["Igual que origen", "Multi-AZ", "Single-AZ"].index(cp["rds_maz"]), key=sk + "r2")
-        storage_mult = col[3].slider("Almacenamiento (×)", 0.25, 3.0, cp["storage_mult"], 0.25, key=sk + "s1")
+        storage_mult = col[3].slider("Almacenamiento (×)", 0.25, 4.0, cp["storage_mult"], 0.25, key=sk + "s1")
         readers = col[3].number_input("Readers Aurora adicionales", 0, 5, 0, key=sk + "a1", disabled=motor != "Aurora")
         aio = col[3].number_input("E/S Aurora (millones/mes)", 0.0, 100000.0, 50.0 * pct / 25, 25.0, key=sk + "a2")
 
@@ -1288,7 +1433,6 @@ def page_finops_sim(inv, asm, k, allc, lines) -> dict | None:
     src = base.loc[[int(i[1:]) for i in sel_g.index]].copy()
     src["cantidad"] = sel_g["Cantidad"].astype(float).values
     qa_inv, cambios = F.simulate_account(src, prm, nombre)
-    one_inv, _ = F.simulate_account(src, {"horario": 1.0}, nombre)
     off = ed[~ed["Incluir"]]
     if not off.empty:
         cambios = pd.concat([cambios, pd.DataFrame({"servicio": off["Servicio"], "recurso": off["Componente"],
@@ -1314,28 +1458,25 @@ def page_finops_sim(inv, asm, k, allc, lines) -> dict | None:
     a_qa = {nombre: asm.get(base_p, F.DEFAULT_ASSUMPTIONS)}
     cost = lambda iv: F.adjust(pd.concat([F.price_lines(iv, a_qa), F.unseen_lines([nombre], a_qa, {})], ignore_index=True), k)
     qa = cost(qa_inv)
-    one = cost(one_inv) if not one_inv.empty else qa.iloc[0:0]
     t_qa = F.totals(qa, {**k, "creditos": 0})
     base_adj = allc[allc["perfil"] == base_p]["costo_ajustado"].sum()
 
-    m = st.columns(5)
+    m = st.columns(4)
     m[0].metric(f"{base_p} hoy (ajustado)", usd(base_adj), border=True)
-    m[1].metric("Réplica al 100 %", usd(one["costo_ajustado"].sum()), border=True, help="Mismos componentes incluidos, sin escalar.")
-    m[2].metric(f"{nombre} al {pct} %", usd(t_qa["neto"]),
+    m[1].metric(f"{nombre} al {pct} %", usd(t_qa["neto"]),
                 delta=f"{100 * t_qa['neto'] / max(base_adj, 1):.0f} % de {base_p}", delta_color="off", border=True)
-    m[3].metric("Total a pagar / mes (est.)", usd(t_qa["total"]),
+    m[2].metric("Total a pagar / mes (est.)", usd(t_qa["total"]),
                 help=f"Ajustado + soporte {usd(t_qa['soporte'])} + IVA {usd(t_qa['iva'])}. Sin créditos.", border=True)
-    m[4].metric("Proyección anual", usd(t_qa["total"] * 12), border=True)
+    m[3].metric("Proyección anual", usd(t_qa["total"] * 12), border=True)
 
     g1, g2 = st.columns([3, 2])
-    lbl_one, lbl_qa = "Réplica 100 %", f"{nombre} {pct} %"
-    cmp_ = pd.concat([allc[allc["perfil"] == base_p].assign(cuenta_=base_p), one.assign(cuenta_=lbl_one),
-                      qa.assign(cuenta_=lbl_qa)]).groupby(["servicio", "cuenta_"])["costo_ajustado"].sum().reset_index()
+    lbl_qa = f"{nombre} {pct} %"
+    cmp_ = pd.concat([allc[allc["perfil"] == base_p].assign(cuenta_=base_p), qa.assign(cuenta_=lbl_qa)]).groupby(["servicio", "cuenta_"])["costo_ajustado"].sum().reset_index()
     order = cmp_.groupby("servicio")["costo_ajustado"].max().sort_values(ascending=False).head(12).index.tolist()
     cmp_ = cmp_[cmp_["servicio"].isin(order)]
     fig = px.bar(cmp_, x="servicio", y="costo_ajustado", color="cuenta_", barmode="group", height=340,
-                 category_orders={"servicio": order, "cuenta_": [base_p, lbl_one, lbl_qa]},
-                 color_discrete_sequence=[GRIS, AZUL, NARANJA], title=f"USD/mes por servicio: {base_p} vs {nombre}")
+                 category_orders={"servicio": order, "cuenta_": [base_p, lbl_qa]},
+                 color_discrete_sequence=[GRIS, NARANJA], title=f"USD/mes por servicio: {base_p} vs {nombre}")
     fig.update_layout(margin=dict(l=0, r=0, t=36, b=0), title_font_size=13, legend_title_text="", xaxis_title="", yaxis_title="")
     g1.plotly_chart(fig, width="stretch")
     with g2:
@@ -1359,6 +1500,6 @@ def page_finops_sim(inv, asm, k, allc, lines) -> dict | None:
 
 
 PAGES = {"Sesión": page_session, "Resumen": page_summary, "Salud y VPN": page_health,
-         "Bases de datos (RDS)": page_rds, "WAF y firewalls": page_waf, "Security Hub": page_sh,
+         "Bases de datos (RDS)": page_rds, "WAF y firewalls": page_waf, "Security Hub": page_sh, "AWS Config": page_config,
          "Cambios recientes": page_changes, "FinOps": page_finops}
 PAGES[page]()

@@ -488,15 +488,16 @@ def _step_size(cls: str, step: int, catalog) -> str:
     return ladder[max(0, min(len(ladder) - 1, i))]
 
 
-CAPACITY_LEVELS = [25, 50, 100, 200, 400]  # % de la cuenta origen; cada duplicación = un tamaño de instancia
+CAPACITY_LEVELS = [25, 50, 75, 100, 150, 200, 300, 400]  # % de la cuenta origen; cada duplicación ≈ un tamaño de instancia
 
 
 def capacity_params(pct: int) -> dict:
     """Traduce '% de capacidad respecto al origen' a cambios concretos por servicio."""
     f = pct / 100
     step = int(round(math.log2(f)))
-    return dict(ec2_step=step, ec2_mult=1.0, ecs_size=min(4.0, max(0.25, f)), ecs_mult=1.0, rds_step=step,
-                storage_mult=min(3.0, max(0.25, f)),
+    size = min(4.0, max(0.25, 2 ** math.floor(math.log2(f))))  # tamaño de tarea Fargate válido (potencia de 2)
+    return dict(ec2_step=step, ec2_mult=1.0, ecs_size=size, ecs_mult=round(f / size, 2), rds_step=step,
+                storage_mult=min(4.0, max(0.25, f)),
                 rds_maz="Single-AZ" if pct < 100 else "Multi-AZ" if pct > 100 else "Igual que origen")
 
 

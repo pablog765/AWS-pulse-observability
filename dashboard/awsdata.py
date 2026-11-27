@@ -579,6 +579,77 @@ def _short_resource(arn: str) -> str:
     return arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
 
 
+# ------------------------------------------------------------- AWS Config
+def config_query(profile: str, expr: str, max_items: int = 500) -> list[dict]:
+    """Consulta avanzada (SQL) sobre el inventario de Config. Solo lectura."""
+    d = try_aws(profile, "configservice", "select-resource-config", "--expression", expr,
+                "--max-items", str(max_items), default=None) or {}
+    out = []
+    for r in d.get("Results", []):
+        try:
+            out.append(json.loads(r))
+        except (TypeError, json.JSONDecodeError):
+            pass
+    return out
+
+
+def _rule_origin(created_by: str, name: str) -> str:
+    cb = (created_by or "").lower()
+    if "securityhub" in cb:
+        return "Security Hub"
+    if "fms" in cb:
+        return "Firewall Manager"
+    if "config-conforms" in cb:
+        return "Conformance pack"
+    if "controltower" in cb or name.startswith("AWSControlTower"):
+        return "Control Tower"
+    return "Propia de la cuenta"
+
+
+def config_status(profile: str) -> dict:
+    """Estado de AWS Config en una cuenta: grabador, inventario, reglas y su cumplimiento."""
+    rec = (try_aws(profile, "configservice", "describe-configuration-recorder-status", default={}) or {}).get("ConfigurationRecordersStatus", [])
+    r0 = rec[0] if rec else {}
+    counts = try_aws(profile, "configservice", "get-discovered-resource-counts", default={}) or {}
+    rules = (try_aws(profile, "configservice", "describe-config-rules", default={}) or {}).get("ConfigRules", [])
+    comp = (try_aws(profile, "configservice", "describe-compliance-by-config-rule", default={}) or {}).get("ComplianceByConfigRules", [])
+    cmap = {c["ConfigRuleName"]: c.get("Compliance", {}) for c in comp}
+    packs = (try_aws(profile, "configservice", "describe-conformance-packs", default={}) or {}).get("ConformancePackDetails", [])
+    reglas = []
+    for r in rules:
+        c = cmap.get(r["ConfigRuleName"], {})
+        n = (c.get("ComplianceContributorCount") or {}).get("CappedCount")
+        reglas.append({"cuenta": profile, "regla": r["ConfigRuleName"], "origen": _rule_origin(r.get("CreatedBy", ""), r["ConfigRuleName"]),
+                       "control_aws": (r.get("Source") or {}).get("SourceIdentifier", "-"),
+                       "estado": c.get("ComplianceType", "Sin evaluación propia"), "recursos_no_cumplen": n,
+                       "descripcion": r.get("Description", "")})
+    name = r0.get("name", "")
+    return {"cuenta": profile, "grabando": bool(r0.get("recording")), "ultimo_estado": r0.get("lastStatus", "-"),
+            "grabador": "Control Tower" if "controltower" in name else (name or "No configurado"),
+            "desde": to_local(r0.get("lastStartTime")), "recursos": counts.get("totalDiscoveredResources", 0),
+            "por_tipo": [{"cuenta": profile, "tipo": x["resourceType"], "cantidad": x["count"]} for x in counts.get("resourceCounts", [])],
+            "reglas": reglas, "packs": [p_["ConformancePackName"] for p_ in packs]}
+
+
+def config_findings(profile: str, days: int) -> dict:
+    """Consultas rápidas al inventario: discos sueltos, discos sin cifrar y recursos cambiados en los últimos días."""
+    since = (now() - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sueltos = config_query(profile, "SELECT resourceId, resourceName, configuration.size "
+                                    "WHERE resourceType = 'AWS::EC2::Volume' AND configuration.state.value = 'available'")
+    sin_cifrar = config_query(profile, "SELECT resourceId, resourceName, configuration.size, configuration.state.value, configuration.attachments "
+                                       "WHERE resourceType = 'AWS::EC2::Volume' AND configuration.encrypted = false")
+    cambios = config_query(profile, "SELECT resourceType, resourceId, resourceName, configurationItemCaptureTime, configurationItemStatus "
+                                    f"WHERE configurationItemCaptureTime >= '{since}' ORDER BY configurationItemCaptureTime DESC", 1000)
+    vol = lambda r: {"cuenta": profile, "volumen": r.get("resourceId"), "nombre": r.get("resourceName") or "-",
+                     "gb": (r.get("configuration") or {}).get("size"),
+                     "servidor": ", ".join(a.get("instanceId", "") for a in (r.get("configuration") or {}).get("attachments") or []) or "-",
+                     "estado": ((r.get("configuration") or {}).get("state") or {}).get("value", "-")}
+    return {"sueltos": [vol(r) for r in sueltos], "sin_cifrar": [vol(r) for r in sin_cifrar],
+            "cambios": [{"cuenta": profile, "tipo": r.get("resourceType"), "recurso": r.get("resourceName") or r.get("resourceId"),
+                         "cuando": to_local(r.get("configurationItemCaptureTime")), "estado": r.get("configurationItemStatus")}
+                        for r in cambios]}
+
+
 # ------------------------------------------------------------- CloudTrail
 NOISE = re.compile(r"^(CreateTags|DeleteTags|CreateNetworkInterface|DeleteNetworkInterface|AttachNetworkInterface|"
                    r"DetachNetworkInterface|AssignPrivateIpAddresses|UnassignPrivateIpAddresses|ModifyNetworkInterfaceAttribute|"

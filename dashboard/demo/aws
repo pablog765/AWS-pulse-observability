@@ -195,5 +195,48 @@ if (svc, op) == ("cloudtrail", "lookup-events"):
     out([{"fecha": iso(now - dt.timedelta(hours=7 * i + j)), "fuente": s, "accion": e, "usuario": u, "recurso": r}
          for i in range(12) for j, (s, e, u, r) in enumerate(ev)] if prof in ("prod", "dev") else [])
 
+if svc == "configservice":
+    if op == "describe-configuration-recorder-status":
+        out({"ConfigurationRecordersStatus": [{"name": "aws-controltower-BaselineConfigRecorder", "recording": prof != "network",
+             "lastStatus": "SUCCESS" if prof != "network" else "FAILURE", "lastStartTime": iso(now - dt.timedelta(days=380))}]})
+    if op == "get-discovered-resource-counts":
+        tipos = {"prod": [("IAM::Role", 46), ("Backup::RecoveryPoint", 28), ("EC2::NetworkInterface", 23), ("CloudWatch::Alarm", 14),
+                          ("EC2::SecurityGroup", 13), ("EC2::Volume", 5), ("RDS::DBSnapshot", 9), ("EC2::Instance", 4), ("ElasticLoadBalancingV2::LoadBalancer", 5)],
+                 "dev": [("IAM::Role", 31), ("EC2::NetworkInterface", 9), ("EC2::SecurityGroup", 8), ("EC2::Volume", 6), ("EC2::Instance", 4)],
+                 "network": [("EC2::VPC", 3), ("EC2::Subnet", 12), ("EC2::RouteTable", 8), ("EC2::VPNConnection", 3)],
+                 "security": [("IAM::Role", 22), ("S3::Bucket", 4), ("KMS::Key", 3)]}[prof]
+        out({"totalDiscoveredResources": sum(n for _, n in tipos), "resourceCounts": [{"resourceType": "AWS::" + t, "count": n} for t, n in tipos]})
+    if op == "describe-config-rules":
+        r = [{"ConfigRuleName": f"securityhub-control-{i}", "CreatedBy": "securityhub.amazonaws.com", "Source": {"Owner": "AWS", "SourceIdentifier": "X"}} for i in range(40)]
+        r += [{"ConfigRuleName": "FMManagedWafv2RegionalResourceConfigRule-1", "CreatedBy": "fms.amazonaws.com",
+               "Source": {"Owner": "AWS", "SourceIdentifier": "FMS_WEBACL_RESOURCE_POLICY_CHECK_V2"}, "Description": "Verifica el web ACL de la política FMS"}]
+        if prof == "dev":
+            r += [{"ConfigRuleName": "ebs-cifrado-obligatorio", "Source": {"Owner": "AWS", "SourceIdentifier": "ENCRYPTED_VOLUMES"},
+                   "Description": "Los volúmenes EBS conectados deben estar cifrados"}]
+        out({"ConfigRules": r})
+    if op == "describe-compliance-by-config-rule":
+        c = [{"ConfigRuleName": "FMManagedWafv2RegionalResourceConfigRule-1", "Compliance": {"ComplianceType": "COMPLIANT"}}]
+        if prof == "dev":
+            c += [{"ConfigRuleName": "ebs-cifrado-obligatorio", "Compliance": {"ComplianceType": "NON_COMPLIANT", "ComplianceContributorCount": {"CappedCount": 2}}}]
+        out({"ComplianceByConfigRules": c})
+    if op == "describe-conformance-packs":
+        out({"ConformancePackDetails": []})
+    if op == "select-resource-config":
+        e = arg("--expression", "")
+        if "state.value = 'available'" in e:
+            out({"Results": [json.dumps({"resourceId": "vol-0demo0000000001", "configuration": {"size": 50}})] if prof == "dev" else []})
+        if "encrypted = false" in e:
+            res = {"prod": [("vol-0demo00000000a1", 100, "i-0a1b2c3d4e5f60001"), ("vol-0demo00000000a2", 100, "i-0a1b2c3d4e5f60002")],
+                   "dev": [("vol-0demo00000000b1", 30, "i-0demo")]}.get(prof, [])
+            out({"Results": [json.dumps({"resourceId": v, "configuration": {"size": g, "state": {"value": "in-use"}, "attachments": [{"instanceId": i}]}})
+                             for v, g, i in res]})
+        if "configurationItemCaptureTime" in e:
+            tipos = ["AWS::Backup::RecoveryPoint", "AWS::EC2::NetworkInterface", "AWS::RDS::DBSnapshot", "AWS::EC2::SecurityGroup"]
+            n = {"prod": 30, "dev": 12}.get(prof, 2)
+            out({"Results": [json.dumps({"resourceType": tipos[i % 4], "resourceId": f"res-{i}", "resourceName": f"{tipos[i % 4].split('::')[-1].lower()}-{i}",
+                                         "configurationItemCaptureTime": iso(now - dt.timedelta(hours=5 * i)),
+                                         "configurationItemStatus": "ResourceDiscovered" if i % 4 == 0 else "OK"}) for i in range(n)]})
+        out({"Results": []})
+
 print(f"mock: comando no simulado: {' '.join(a[:2])}", file=sys.stderr)
 sys.exit(254)
