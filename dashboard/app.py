@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pandas as pd
 import plotly.express as px
@@ -63,11 +64,20 @@ def badge(text, color):
 PASSWORD = os.environ.get("AWS_PULSE_PASSWORD", "")
 _ip = getattr(st.context, "ip_address", None)
 CLIENT_IP = _ip if isinstance(_ip, str) and _ip else "127.0.0.1"  # sin IP conocida = mismo equipo
-IS_LOCAL = CLIENT_IP.removeprefix("::ffff:").startswith("127.") or CLIENT_IP in ("::1", "localhost")
-if not IS_LOCAL and not PASSWORD:
+LOOPBACK = CLIENT_IP.removeprefix("::ffff:").startswith("127.") or CLIENT_IP in ("::1", "localhost")
+_headers = getattr(st.context, "headers", None) or {}
+_host = urlsplit("//" + (_headers.get("Host") or "")).hostname or ""
+# Un proxy en este mismo equipo también llega por loopback: solo es local quien además entra directo como localhost
+IS_LOCAL = LOOPBACK and not _headers.get("X-Forwarded-For") and _host in ("", "localhost", "127.0.0.1", "::1")
+# Con AWS_PULSE_PROXY_AUTH=1 la contraseña de cada usuario la pide el proxy local (p. ej. Caddy con basic_auth).
+# Streamlit informa como IP del cliente la de X-Forwarded-For, así que no sirve para reconocer al proxy: se exige
+# que el servidor escuche solo en este equipo, de modo que nadie de la red pueda conectarse sin pasar por él.
+PROXY_AUTH = (os.environ.get("AWS_PULSE_PROXY_AUTH", "") == "1" and not IS_LOCAL and bool(_headers.get("X-Forwarded-For"))
+              and st.get_option("server.address") in ("127.0.0.1", "localhost", "::1"))
+if not IS_LOCAL and not PROXY_AUTH and not PASSWORD:
     st.error("El acceso desde la red está deshabilitado. En el equipo anfitrión define AWS_PULSE_PASSWORD y reinicia el dashboard.")
     st.stop()
-if PASSWORD and not IS_LOCAL and not st.session_state.get("auth"):
+if PASSWORD and not IS_LOCAL and not PROXY_AUTH and not st.session_state.get("auth"):
     st.markdown("### AWS Pulse")
     pw = st.text_input("Contraseña", type="password")
     if pw:
@@ -137,11 +147,14 @@ def per_account(fn, profiles, *args):
     return res, errs
 
 
+SIN_SESION = "Ve a **Sesión** e inicia sesión." if IS_LOCAL else "Avisa al administrador del dashboard."
+
+
 def show_errors(errs):
     if not errs:
         return
     if any("Sesión" in e for e in errs.values()):
-        st.warning("La sesión SSO no está activa en: " + ", ".join(errs) + ". Ve a **Sesión** e inicia sesión.")
+        st.warning("La sesión SSO no está activa en: " + ", ".join(errs) + f". {SIN_SESION}")
     for p, e in errs.items():
         if "Sesión" not in e:
             st.caption(f"{p}: {e}")
@@ -162,12 +175,15 @@ with st.sidebar:
         menu.remove("Sesión")
     page = st.radio("Módulo", menu, index=menu.index("Resumen"), label_visibility="collapsed")
     st.divider()
-    opts = sorted(set(cfg_profiles) | set(DEFAULT_PROFILES))
+    # quien entra por la red solo ve las cuentas publicadas en AWS_PULSE_PROFILES (si está definida)
+    opts = sorted(set(cfg_profiles) | set(DEFAULT_PROFILES)) if IS_LOCAL or not DEFAULT_PROFILES else sorted(DEFAULT_PROFILES)
     profiles = st.multiselect("Cuentas", opts, default=[p for p in DEFAULT_PROFILES if p in opts] or opts[:4])
-    sso_session = st.selectbox("Sesión SSO", sessions or ["mi-sso"], help="Nombre del bloque [sso-session] en ~/.aws/config")
-    A.REGION = st.text_input("Región", A.REGION)
+    sso_session = (sessions or ["mi-sso"])[0]
+    if IS_LOCAL:  # región, sesión y caché son compartidas por todos: solo las cambia quien está en este equipo
+        sso_session = st.selectbox("Sesión SSO", sessions or ["mi-sso"], help="Nombre del bloque [sso-session] en ~/.aws/config")
+        A.REGION = st.text_input("Región", A.REGION)
     st.caption(f"Horas en {A.TZ_NAME}")
-    if st.button("Actualizar datos ahora", width="stretch"):
+    if IS_LOCAL and st.button("Actualizar datos ahora", width="stretch"):
         st.cache_data.clear()
         st.rerun()
     st.caption(f"Los datos se reutilizan {TTL // 60} min para no repetir consultas.")
@@ -249,7 +265,7 @@ def page_summary():
         ids = {i["perfil"]: i for i in A.parallel(c_identity, profiles)}
         live = [p for p in profiles if ids[p]["estado"] == "OK"]
         if not live:
-            st.warning("No hay sesión activa. Ve a **Sesión** e inicia sesión.")
+            st.warning(f"No hay sesión activa. {SIN_SESION}")
             return
         sin = [p for p in profiles if p not in live]
         if sin:
@@ -419,13 +435,14 @@ def page_rds():
     todas = flat(rds)
     ocultas = hidden_dbs()
     dbs = [d for d in todas if d["id"] not in ocultas]
-    with st.popover(f"Bases ocultas ({len([d for d in todas if d['id'] in ocultas])})"):
-        sel = st.multiselect("No mostrar estas bases", sorted(d["id"] for d in todas),
-                             default=sorted(d["id"] for d in todas if d["id"] in ocultas),
-                             help="Se guarda solo en este equipo (dashboard/.local/ocultar_bd.txt). FinOps las sigue contando: cuestan hasta que se eliminen.")
-        if st.button("Guardar"):
-            save_hidden_dbs(sel)
-            st.rerun()
+    if IS_LOCAL:
+        with st.popover(f"Bases ocultas ({len([d for d in todas if d['id'] in ocultas])})"):
+            sel = st.multiselect("No mostrar estas bases", sorted(d["id"] for d in todas),
+                                 default=sorted(d["id"] for d in todas if d["id"] in ocultas),
+                                 help="Se guarda solo en este equipo (dashboard/.local/ocultar_bd.txt). FinOps las sigue contando: cuestan hasta que se eliminen.")
+            if st.button("Guardar"):
+                save_hidden_dbs(sel)
+                st.rerun()
     if not dbs:
         st.info("No se encontraron bases de datos RDS en las cuentas seleccionadas.")
         return
